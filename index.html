@@ -5,7 +5,369 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Y2Kam</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Y2Kam</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="">
+
+<div class="desktop">
+  <div class="window">
+    <div class="titlebar">
+      <div class="titlebar-left">
+        <span class="titlebar-icon"></span>
+        <span>Y2Kam</span>
+      </div>
+      <div class="win-buttons">
+        <div class="win-btn">_</div>
+        <div class="win-btn">□</div>
+        <div class="win-btn">×</div>
+      </div>
+    </div>
+    <div class="menubar" id="menubar">
+      <span class="menu-trigger" data-menu="fileMenu">File</span>
+      <span class="menu-trigger" data-menu="editMenu">Edit</span>
+      <span class="menu-trigger" data-menu="effectsMenu">Effects</span>
+      <span class="menu-trigger" data-menu="helpMenu">Help</span>
+
+      <div class="menu-dropdown" id="fileMenu">
+        <button type="button" id="menuOpen">Open Photo...</button>
+        <button type="button" id="menuSave" disabled>Save As...</button>
+      </div>
+
+      <div class="menu-dropdown" id="editMenu">
+        <button type="button" id="menuReset" disabled>Reset all filters</button>
+        <button type="button" id="menuRandomize" disabled>Randomize filters</button>
+      </div>
+
+      <div class="menu-dropdown" id="effectsMenu">
+        <button type="button" data-preset="digicam2003">2003 Point-and-Shoot</button>
+        <button type="button" data-preset="flashnight">Harsh Flash / Night</button>
+        <button type="button" data-preset="lofi">Low-Res Webcam</button>
+        <button type="button" data-preset="filmleak">Film Leak</button>
+        <button type="button" data-preset="dreamtape">Dream Tape</button>
+        <button type="button" data-preset="desertcam">Desert Cam</button>
+        <button type="button" data-preset="nightglam">Night Glam</button>
+        <button type="button" data-preset="crtarcade">CRT Arcade</button>
+        <button type="button" data-preset="pinkpolaroid">Pink Polaroid</button>
+        <button type="button" data-preset="lavenderdusk">Lavender Dusk</button>
+      </div>
+
+      <div class="menu-dropdown" id="helpMenu">
+        <button type="button" id="menuAbout">About Y2Kam</button>
+      </div>
+    </div>
+
+    <div class="content">
+      <div class="screen-inset">
+        <div class="canvas-wrap" id="canvasWrap">
+          <div class="empty-state" id="emptyState">
+            NO IMAGE LOADED<span class="blink">_</span><br><br>
+            [ Tap "Open Photo..." below ]
+          </div>
+          <canvas id="canvas" style="display:none;"></canvas>
+        </div>
+      </div>
+
+      <div class="lut-strip" id="lutStrip"></div>
+
+      <div class="controls-panel">
+        <details class="section-group" open>
+          <summary class="section-label">Window Theme</summary>
+          <div class="theme-toggle-row">
+            <label>Color</label>
+            <div class="theme-swatches">
+              <button type="button" class="theme-swatch blue active" id="themeBlueBtn" aria-label="Blue theme"></button>
+              <button type="button" class="theme-swatch pink" id="themePinkBtn" aria-label="Pink theme"></button>
+              <button type="button" class="theme-swatch orange" id="themeOrangeBtn" aria-label="Orange theme"></button>
+              <button type="button" class="theme-swatch mint" id="themeMintBtn" aria-label="Mint theme"></button>
+              <button type="button" class="theme-swatch plum" id="themePlumBtn" aria-label="Plum theme"></button>
+              <button type="button" class="theme-swatch forest" id="themeForestBtn" aria-label="Forest theme"></button>
+              <button type="button" class="theme-swatch charcoal" id="themeCharcoalBtn" aria-label="Charcoal theme"></button>
+              <button type="button" class="theme-swatch hotred" id="themeHotredBtn" aria-label="Hot Red theme"></button>
+            </div>
+          </div>
+        </details>
+
+        <details class="section-group" open>
+          <summary class="section-label">Digicam Preset</summary>
+          <div class="field-row">
+            <select class="win95-select" id="presetSelect">
+              <option value="digicam2003">2003 Point-and-Shoot</option>
+              <option value="flashnight">Harsh Flash / Night</option>
+              <option value="lofi">Low-Res Webcam</option>
+              <option value="filmleak">Film Leak</option>
+              <option value="dreamtape">Dream Tape</option>
+              <option value="desertcam">Desert Cam</option>
+              <option value="nightglam">Night Glam</option>
+              <option value="crtarcade">CRT Arcade</option>
+              <option value="pinkpolaroid">Pink Polaroid</option>
+              <option value="lavenderdusk">Lavender Dusk</option>
+              <option value="clean">Custom (no preset)</option>
+            </select>
+          </div>
+        </details>
+
+        <details class="section-group" open>
+          <summary class="section-label">Adjustments</summary>
+          <div class="field-row">
+            <label for="grain">Grain</label>
+            <input type="range" id="grain" min="0" max="100" value="35">
+            <span class="val" id="grainVal">35</span>
+          </div>
+          <div class="field-row">
+            <label for="flash">Flash glare</label>
+            <input type="range" id="flash" min="0" max="100" value="20">
+            <span class="val" id="flashVal">20</span>
+          </div>
+          <div class="field-row">
+            <label for="satur">Saturation</label>
+            <input type="range" id="satur" min="0" max="200" value="115">
+            <span class="val" id="saturVal">115</span>
+          </div>
+          <div class="field-row">
+            <label for="pixel">Pixelation</label>
+            <input type="range" id="pixel" min="0" max="12" value="1">
+            <span class="val" id="pixelVal">1</span>
+          </div>
+          <div class="field-row">
+            <label for="fade">Fade</label>
+            <input type="range" id="fade" min="0" max="100" value="15">
+            <span class="val" id="fadeVal">15</span>
+          </div>
+          <div class="field-row">
+            <label for="chroma">Color fringe</label>
+            <input type="range" id="chroma" min="0" max="100" value="0">
+            <span class="val" id="chromaVal">0</span>
+          </div>
+          <div class="field-row">
+            <label for="leak">Light leak</label>
+            <input type="range" id="leak" min="0" max="100" value="0">
+            <span class="val" id="leakVal">0</span>
+          </div>
+          <div class="field-row">
+            <label for="scanlines">Scan lines</label>
+            <input type="range" id="scanlines" min="0" max="100" value="0">
+            <span class="val" id="scanlinesVal">0</span>
+          </div>
+          <div class="field-row">
+            <label for="sharpen">Sharpen</label>
+            <input type="range" id="sharpen" min="0" max="100" value="0">
+            <span class="val" id="sharpenVal">0</span>
+          </div>
+          <div class="field-row">
+            <label for="vibrance">Vibrance</label>
+            <input type="range" id="vibrance" min="0" max="100" value="0">
+            <span class="val" id="vibranceVal">0</span>
+          </div>
+          <div class="field-row">
+            <label for="tvcurve">Old TV Curvature</label>
+            <input type="range" id="tvcurve" min="0" max="100" value="0">
+            <span class="val" id="tvcurveVal">0</span>
+          </div>
+          <div class="button-row">
+            <button class="win95-btn" id="adjustmentsResetBtn" type="button">Reset Adjustments</button>
+          </div>
+        </details>
+
+        <details class="section-group">
+          <summary class="section-label">RGB Balance</summary>
+          <div class="field-row">
+            <label for="redBalance">Red</label>
+            <input type="range" id="redBalance" min="-100" max="100" value="0">
+            <span class="val" id="redBalanceVal">0</span>
+          </div>
+          <div class="field-row">
+            <label for="greenBalance">Green</label>
+            <input type="range" id="greenBalance" min="-100" max="100" value="0">
+            <span class="val" id="greenBalanceVal">0</span>
+          </div>
+          <div class="field-row">
+            <label for="blueBalance">Blue</label>
+            <input type="range" id="blueBalance" min="-100" max="100" value="0">
+            <span class="val" id="blueBalanceVal">0</span>
+          </div>
+          <div class="button-row">
+            <button class="win95-btn" id="rgbResetBtn" type="button">Reset RGB to 0</button>
+          </div>
+        </details>
+
+        <details class="section-group">
+          <summary class="section-label">Pixel Effects</summary>
+          <div class="field-row">
+            <select class="win95-select" id="pixelEffectSelect">
+              <option value="none">No effect</option>
+              <option value="glitchwave">Glitch Wave</option>
+              <option value="doubleexposure">Double Exposure</option>
+              <option value="emboss">Emboss</option>
+              <option value="solarize">Solarize</option>
+              <option value="pixelsort">Pixel Sort</option>
+              <option value="halftone">Halftone / Newspaper Dot</option>
+            </select>
+          </div>
+          <div class="field-row">
+            <label for="pixelEffectStrength">Effect strength</label>
+            <input type="range" id="pixelEffectStrength" min="10" max="100" value="70">
+            <span class="val" id="pixelEffectStrengthVal">70</span>
+          </div>
+        </details>
+
+        <details class="section-group">
+          <summary class="section-label">Overlay</summary>
+          <div class="field-row">
+            <select class="win95-select" id="overlaySelect">
+              <option value="none">No overlay</option>
+              <option value="bsod">Fatal Error (BSOD)</option>
+              <option value="vhs">VHS Static / Tracking</option>
+              <option value="rec">REC Indicator</option>
+              <option value="lowbattery">Low Battery UI</option>
+              <option value="starfield">Starfield Sparkle</option>
+              <option value="tvstatic">Old TV Static</option>
+              <option value="rainglass">Rain on Glass</option>
+              <option value="dustscratches">Dust &amp; Scratches</option>
+              <option value="confetti">Confetti</option>
+              <option value="snowfall">Snowfall</option>
+              <option value="matrixrain">Terminal / Matrix Rain</option>
+            </select>
+          </div>
+          <div class="field-row">
+            <label for="overlayOpacity">Overlay strength</label>
+            <input type="range" id="overlayOpacity" min="10" max="100" value="70">
+            <span class="val" id="overlayOpacityVal">70</span>
+          </div>
+        </details>
+
+        <details class="section-group">
+          <summary class="section-label">Stamps</summary>
+          <div class="checkbox-row">
+            <input type="checkbox" id="playStamp">
+            <label for="playStamp">Play ▶ button</label>
+          </div>
+          <div class="checkbox-row">
+            <input type="checkbox" id="batteryStamp">
+            <label for="batteryStamp">Battery icon</label>
+          </div>
+          <div class="field-row">
+            <input type="text" id="customStampText" class="win95-input" placeholder="Custom caption text" maxlength="24" style="flex:1;">
+          </div>
+        </details>
+
+        <details class="section-group">
+          <summary class="section-label">Frame</summary>
+          <div class="field-row">
+            <select class="win95-select" id="borderSelect">
+              <option value="none">No border</option>
+              <option value="polaroid">Polaroid (white)</option>
+              <option value="filmstrip">Filmstrip (black)</option>
+              <option value="crtbezel">CRT Bezel</option>
+              <option value="tapecorners">Tape Corners</option>
+              <option value="sticker">Sticker Border</option>
+              <option value="thinmat">Thin Mat</option>
+              <option value="stickynote">Sticky Note</option>
+              <option value="ticketstub">Ticket Stub</option>
+            </select>
+          </div>
+          <div id="polaroidCaptionControls" style="display:none;">
+            <div class="field-row">
+              <input type="text" id="polaroidCaptionText" class="win95-input" placeholder="Write a caption..." maxlength="40" style="flex:1;">
+            </div>
+            <div class="field-row">
+              <label>Ink color</label>
+              <div class="ink-swatches">
+                <button type="button" class="ink-swatch active" data-color="#2b2b2b" style="background:#2b2b2b;" aria-label="Black marker"></button>
+                <button type="button" class="ink-swatch" data-color="#1a4fd6" style="background:#1a4fd6;" aria-label="Blue marker"></button>
+                <button type="button" class="ink-swatch" data-color="#d61a1a" style="background:#d61a1a;" aria-label="Red marker"></button>
+                <button type="button" class="ink-swatch" data-color="#1f7a3d" style="background:#1f7a3d;" aria-label="Green marker"></button>
+              </div>
+            </div>
+            <div class="field-row">
+              <label for="polaroidCaptionNudge">Text position</label>
+              <input type="range" id="polaroidCaptionNudge" min="0" max="100" value="50">
+              <span class="val" id="polaroidCaptionNudgeVal">50</span>
+            </div>
+          </div>
+          <div class="checkbox-row">
+            <input type="checkbox" id="winFrame">
+            <label for="winFrame">Wrap export in Win95 window</label>
+          </div>
+          <div id="winFrameColorControls" style="display:none;">
+            <div class="field-row">
+              <label for="winFrameColor">Titlebar color</label>
+              <input type="color" id="winFrameColor" value="#1084d0">
+              <input type="text" id="winFrameColorHex" class="win95-input" value="#1084d0" maxlength="7" placeholder="#1084d0" style="width:80px;">
+            </div>
+          </div>
+        </details>
+
+        <details class="section-group" open>
+          <summary class="section-label">Export</summary>
+          <div class="field-row">
+            <label for="quality">JPEG quality</label>
+            <input type="range" id="quality" min="30" max="95" value="80">
+            <span class="val" id="qualityVal">80</span>
+          </div>
+          <div class="field-row" style="justify-content: space-between;">
+            <label style="width:auto;">Est. file size</label>
+            <span class="val" id="sizeEstimate" style="width:auto; font-weight:bold;">—</span>
+          </div>
+
+          <div class="checkbox-row">
+            <input type="checkbox" id="timestamp" checked>
+            <label for="timestamp">Show date/time stamp</label>
+          </div>
+          <div class="checkbox-row">
+            <input type="checkbox" id="vignette" checked>
+            <label for="vignette">Corner vignette</label>
+          </div>
+
+          <div class="button-row">
+            <button class="win95-btn primary" id="openBtn" type="button">Open Photo...</button>
+            <button class="win95-btn" id="saveBtn" disabled type="button">Save As...</button>
+          </div>
+          <input type="file" id="fileInput" accept="image/*">
+        </details>
+      </div>
+    </div>
+
+    <div class="statusbar">
+      <span id="statusLeft">Ready</span>
+      <span id="statusRight">95%</span>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="aboutOverlay">
+  <div class="modal-dialog">
+    <div class="modal-titlebar">
+      <span>About Y2Kam</span>
+      <div class="win-buttons">
+        <div class="win-btn" id="aboutCloseX">×</div>
+      </div>
+    </div>
+    <div class="modal-body">
+      <div class="app-title">Y2Kam</div>
+      A retro digicam photo filter, styled like it's 1998.<br><br>
+      Add grain, flash glare, light leaks, and color fringe to any photo, then export it small enough to actually send.<br><br>
+      Built with canvas &amp; nostalgia.
+    </div>
+    <div class="modal-footer">
+      <button class="win95-btn" id="aboutCloseBtn" type="button">OK</button>
+    </div>
+  </div>
+</div>
+
+<script src="script.js"></script>
+
+</body>
+</html>
+gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 </head>
