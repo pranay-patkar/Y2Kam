@@ -721,3 +721,49 @@
     color: #a01818;
     font-weight: bold;
   }
+
+  /* --- Fake processing delay (Win95-style progress bar on export) --- */
+
+  .processing-dialog {
+    max-width: 260px;
+  }
+
+  .processing-body {
+    padding: 18px 16px;
+  }
+
+  .processing-label {
+    font-size: 12px;
+    margin-bottom: 12px;
+    text-align: center;
+  }
+
+  .processing-bar-track {
+    height: 20px;
+    background: #fff;
+    border: 2px solid var(--inset-border-dark);
+    border-right-color: var(--win-border-light);
+    border-bottom-color: var(--win-border-light);
+    padding: 2px;
+    display: flex;
+    gap: 2px;
+    overflow: hidden;
+  }
+
+  .processing-bar-fill {
+    display: flex;
+    gap: 2px;
+    width: 0%;
+    transition: width 0.12s linear;
+  }
+
+  .processing-bar-fill::before {
+    content: '';
+    display: block;
+    width: 100%;
+    background: repeating-linear-gradient(
+      90deg,
+      var(--accent) 0px, var(--accent) 8px,
+      transparent 8px, transparent 10px
+    );
+  }
