@@ -36,6 +36,8 @@
       </div>
 
       <div class="menu-dropdown" id="editMenu">
+        <button type="button" id="menuUndo" disabled>Undo</button>
+        <button type="button" id="menuRedo" disabled>Redo</button>
         <button type="button" id="menuReset" disabled>Reset all filters</button>
         <button type="button" id="menuRandomize" disabled>Randomize filters</button>
       </div>
@@ -66,6 +68,20 @@
             [ Tap "Open Photo..." below ]
           </div>
           <canvas id="canvas" style="display:none;"></canvas>
+
+          <div class="compare-overlay" id="compareOverlay" style="display:none;">
+            <canvas id="compareOriginalCanvas"></canvas>
+            <div class="compare-handle" id="compareHandle">
+              <div class="compare-handle-grip">◂▸</div>
+            </div>
+            <span class="compare-label compare-label-before">BEFORE</span>
+            <span class="compare-label compare-label-after">AFTER</span>
+          </div>
+
+          <div class="canvas-tool-row">
+            <button type="button" class="win95-btn canvas-tool-btn" id="beforeAfterBtn" title="Hold to see original">👁 Hold for Original</button>
+            <button type="button" class="win95-btn canvas-tool-btn" id="compareToggleBtn" title="Drag to compare">⇔ Compare</button>
+          </div>
         </div>
       </div>
 
@@ -297,6 +313,15 @@
               <input type="text" id="winFrameColorHex" class="win95-input" value="#1084d0" maxlength="7" placeholder="#1084d0" style="width:80px;">
             </div>
           </div>
+        </details>
+
+        <details class="section-group" open>
+          <summary class="section-label">My Presets</summary>
+          <div class="field-row">
+            <input type="text" id="savePresetName" class="win95-input" placeholder="Preset name (optional)" maxlength="24" style="flex:1;">
+            <button type="button" class="win95-btn" id="savePresetBtn">💾 Save</button>
+          </div>
+          <div id="myPresetsList" class="my-presets-list"></div>
         </details>
 
         <details class="section-group" open>
