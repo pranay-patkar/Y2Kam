@@ -40,6 +40,7 @@
         <button type="button" id="menuRedo" disabled>Redo</button>
         <button type="button" id="menuReset" disabled>Reset all filters</button>
         <button type="button" id="menuRandomize" disabled>Randomize filters</button>
+        <button type="button" id="menuShuffleLook" disabled>🎲 Shuffle look</button>
       </div>
 
       <div class="menu-dropdown" id="effectsMenu">
@@ -266,6 +267,10 @@
           <div class="field-row">
             <input type="text" id="customStampText" class="win95-input" placeholder="Custom caption text" maxlength="24" style="flex:1;">
           </div>
+          <div class="checkbox-row">
+            <input type="checkbox" id="exifStamp">
+            <label for="exifStamp">Fake EXIF info</label>
+          </div>
         </details>
 
         <details class="section-group">
@@ -377,6 +382,20 @@
     </div>
     <div class="modal-footer">
       <button class="win95-btn" id="aboutCloseBtn" type="button">OK</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="processingOverlay">
+  <div class="modal-dialog processing-dialog">
+    <div class="modal-titlebar">
+      <span>Y2Kam</span>
+    </div>
+    <div class="modal-body processing-body">
+      <div class="processing-label" id="processingLabel">Developing photo...</div>
+      <div class="processing-bar-track">
+        <div class="processing-bar-fill" id="processingBarFill"></div>
+      </div>
     </div>
   </div>
 </div>
