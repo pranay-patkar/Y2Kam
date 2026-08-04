@@ -88,6 +88,7 @@ menuResetBtn.addEventListener('click', () => {
   pixelEffectStrengthEl.value = 70;
   playStampEl.checked = false;
   batteryStampEl.checked = false;
+  exifStampEl.checked = false;
   customStampTextEl.value = '';
   polaroidCaptionText.value = '';
   polaroidInkColor = '#2b2b2b';
@@ -120,6 +121,30 @@ menuRandomizeBtn.addEventListener('click', () => {
   syncLabels();
   render();
   statusLeft.textContent = 'Filters randomized';
+});
+
+const menuShuffleLookBtn = document.getElementById('menuShuffleLook');
+menuShuffleLookBtn.addEventListener('click', () => {
+  closeAllMenus();
+  if (menuShuffleLookBtn.disabled) return;
+
+  // pick a random LUT, skipping 'none' so shuffle always shows a real look
+  const lutChoices = LUT_ORDER.filter(k => k !== 'none');
+  activeLut = lutChoices[Math.floor(Math.random() * lutChoices.length)];
+  updateLutStripActive();
+
+  // pick a random option from each select, including its own 'none'/'no X' entry
+  // so shuffle occasionally clears a category too — feels more like a real shuffle
+  function randomSelectValue(selectEl) {
+    const opts = Array.from(selectEl.options).map(o => o.value);
+    return opts[Math.floor(Math.random() * opts.length)];
+  }
+  overlaySelect.value = randomSelectValue(overlaySelect);
+  borderSelect.value = randomSelectValue(borderSelect);
+  pixelEffectSelect.value = randomSelectValue(pixelEffectSelect);
+
+  render();
+  statusLeft.textContent = 'Look shuffled — LUT, overlay, frame & effect';
 });
 
 // Effects menu — same presets as the dropdown selector
@@ -197,6 +222,7 @@ const overlayOpacityVal = document.getElementById('overlayOpacityVal');
 const playStampEl = document.getElementById('playStamp');
 const batteryStampEl = document.getElementById('batteryStamp');
 const customStampTextEl = document.getElementById('customStampText');
+const exifStampEl = document.getElementById('exifStamp');
 const qualityEl = document.getElementById('quality');
 const qualityVal = document.getElementById('qualityVal');
 const sizeEstimateEl = document.getElementById('sizeEstimate');
@@ -651,6 +677,22 @@ function randomTimestamp() {
 }
 let fixedTimestamp = randomTimestamp();
 
+// Fake EXIF info block — a fixed-per-photo set of made-up camera stats,
+// styled like the tiny info burn early-2000s digicams stamped on prints.
+const FAKE_CAMERA_MODELS = [
+  'Y2KAM DC-200Z', 'PixelShot X1', 'ClickMaster 3.2MP', 'FotoBurst SC-90',
+  'SnapCam Zoom', 'MegaLens 400', 'RetroShot CX'
+];
+function randomExifData() {
+  const model = FAKE_CAMERA_MODELS[Math.floor(Math.random() * FAKE_CAMERA_MODELS.length)];
+  const iso = [100, 200, 400, 800][Math.floor(Math.random() * 4)];
+  const fstops = ['F2.8', 'F3.5', 'F4.0', 'F5.6'];
+  const fstop = fstops[Math.floor(Math.random() * fstops.length)];
+  return { model, iso, fstop };
+}
+let fixedExifData = randomExifData();
+
+
 fileInput.addEventListener('change', (e) => {
   const file = e.target.files && e.target.files[0];
   if (!file) {
@@ -678,7 +720,9 @@ fileInput.addEventListener('change', (e) => {
       menuSaveBtn.disabled = false;
       menuResetBtn.disabled = false;
       menuRandomizeBtn.disabled = false;
+      menuShuffleLookBtn.disabled = false;
       fixedTimestamp = randomTimestamp();
+      fixedExifData = randomExifData();
       randomizeLeakSeed();
       render();
       generateLutThumbnails();
@@ -788,6 +832,7 @@ overlayOpacityEl.addEventListener('input', () => {
 playStampEl.addEventListener('change', render);
 batteryStampEl.addEventListener('change', render);
 customStampTextEl.addEventListener('input', render);
+exifStampEl.addEventListener('change', render);
 qualityEl.addEventListener('input', () => { syncLabels(); updateSizeEstimate(); });
 timestampEl.addEventListener('change', render);
 vignetteEl.addEventListener('change', render);
@@ -1224,6 +1269,31 @@ function drawEffects(targetCanvas, w, h) {
     tctx.fillText(text2, w * 0.05 + 1, h - pad3 + 1);
     tctx.fillStyle = '#ffffff';
     tctx.fillText(text2, w * 0.05, h - pad3);
+  }
+
+  if (exifStampEl.checked) {
+    // small monospace info block, bottom-right — camera model, date, ISO, f-stop
+    const exifFont = Math.max(9, Math.round(h * 0.024));
+    const lineGap = exifFont * 1.35;
+    const lines = [
+      fixedExifData.model,
+      fixedTimestamp,
+      `ISO ${fixedExifData.iso}  ${fixedExifData.fstop}`
+    ];
+    tctx.font = `${exifFont}px 'Courier New', monospace`;
+    tctx.textBaseline = 'bottom';
+    tctx.textAlign = 'right';
+    const rightX = w - w * 0.04;
+    let exifY = h - h * 0.04;
+    // draw bottom-to-top so the array order reads top-to-bottom
+    for (let i = lines.length - 1; i >= 0; i--) {
+      tctx.fillStyle = 'rgba(0,0,0,0.45)';
+      tctx.fillText(lines[i], rightX + 1, exifY + 1);
+      tctx.fillStyle = 'rgba(255,255,255,0.92)';
+      tctx.fillText(lines[i], rightX, exifY);
+      exifY -= lineGap;
+    }
+    tctx.textAlign = 'left';
   }
 
   // 5c. Full-frame overlays: novelty full-screen layers, applied at adjustable opacity
@@ -1891,10 +1961,36 @@ function formatBytes(bytes) {
   return (bytes/(1024*1024)).toFixed(2) + ' MB';
 }
 
+const processingOverlay = document.getElementById('processingOverlay');
+const processingBarFill = document.getElementById('processingBarFill');
+const processingLabel = document.getElementById('processingLabel');
+
+function runProcessingAnimation(onComplete) {
+  processingOverlay.classList.add('open');
+  processingLabel.textContent = 'Developing photo...';
+  processingBarFill.style.width = '0%';
+  const totalMs = 900 + Math.random() * 500;
+  const start = performance.now();
+  function tick(now) {
+    const elapsed = now - start;
+    const pct = Math.min(100, (elapsed / totalMs) * 100);
+    processingBarFill.style.width = pct + '%';
+    if (pct < 100) {
+      requestAnimationFrame(tick);
+    } else {
+      processingLabel.textContent = 'Done!';
+      setTimeout(() => {
+        processingOverlay.classList.remove('open');
+        onComplete();
+      }, 200);
+    }
+  }
+  requestAnimationFrame(tick);
+}
+
 saveBtn.addEventListener('click', () => {
   statusLeft.textContent = 'Exporting...';
-  // small delay so the status text can paint before the (possibly heavy) export work
-  setTimeout(() => {
+  runProcessingAnimation(() => {
     const quality = parseInt(qualityEl.value, 10) / 100;
     const exportCanvas = getExportCanvas();
     const dataUrl = exportCanvas.toDataURL('image/jpeg', quality);
@@ -1904,7 +2000,7 @@ saveBtn.addEventListener('click', () => {
     link.click();
     const bytes = Math.round(dataUrl.length * 0.75);
     statusLeft.textContent = `Saved (${formatBytes(bytes)})`;
-  }, 30);
+  });
 });
 
 // Load the built-in placeholder photo so LUTs, filters, and the canvas
@@ -1954,6 +2050,7 @@ function getState() {
     pixelEffectStrength: pixelEffectStrengthEl.value,
     playStamp: playStampEl.checked,
     batteryStamp: batteryStampEl.checked,
+    exifStamp: exifStampEl.checked,
     customStampText: customStampTextEl.value,
     polaroidCaptionText: polaroidCaptionText.value,
     polaroidCaptionNudge: polaroidCaptionNudge.value,
@@ -1991,6 +2088,7 @@ function applyState(s) {
   pixelEffectStrengthEl.value = s.pixelEffectStrength;
   playStampEl.checked = s.playStamp;
   batteryStampEl.checked = s.batteryStamp;
+  exifStampEl.checked = !!s.exifStamp;
   customStampTextEl.value = s.customStampText;
   polaroidCaptionText.value = s.polaroidCaptionText;
   polaroidCaptionNudge.value = s.polaroidCaptionNudge;
