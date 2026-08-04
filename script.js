@@ -683,6 +683,11 @@ fileInput.addEventListener('change', (e) => {
       render();
       generateLutThumbnails();
       statusLeft.textContent = file.name;
+      // fresh photo = fresh undo history, so old edits don't bleed across images
+      historyStack.length = 0;
+      historyIndex = -1;
+      pushHistory();
+      updateUndoRedoButtons();
     };
     img.src = ev.target.result;
   };
@@ -1902,8 +1907,6 @@ saveBtn.addEventListener('click', () => {
   }, 30);
 });
 
-syncLabels();
-
 // Load the built-in placeholder photo so LUTs, filters, and the canvas
 // preview show a live example before the person uploads their own image.
 (function loadPlaceholder() {
@@ -1917,6 +1920,334 @@ syncLabels();
     buildLutStrip();
     generateLutThumbnails();
     statusLeft.textContent = 'Preview photo — tap Open Photo to use your own';
+    pushHistory();
+    updateUndoRedoButtons();
   };
   img.src = 'data:image/jpeg;base64,' + PLACEHOLDER_IMG_B64;
 })();
+
+// ============================================================
+// Workflow features: Undo/Redo, Save Presets, Before/After hold,
+// Compare slider. Built on top of the existing controls without
+// touching the render pipeline — it just snapshots/restores every
+// control's value plus the few JS-only state vars (theme, LUT,
+// ink color, leak seed).
+// ============================================================
+
+function getState() {
+  return {
+    theme: document.body.className || '',
+    activeLut: activeLut,
+    polaroidInkColor: polaroidInkColor,
+    leakSeed: { ...leakSeed },
+    preset: presetEl.value,
+    grain: grainEl.value, flash: flashEl.value, satur: saturEl.value, pixel: pixelEl.value,
+    fade: fadeEl.value, chroma: chromaEl.value, leak: leakEl.value, scanlines: scanlinesEl.value,
+    sharpen: sharpenEl.value, vibrance: vibranceEl.value, tvcurve: tvcurveEl.value,
+    redBalance: redBalanceEl.value, greenBalance: greenBalanceEl.value, blueBalance: blueBalanceEl.value,
+    border: borderSelect.value,
+    winFrame: winFrameEl.checked,
+    winFrameColor: winFrameColorEl.value,
+    overlay: overlaySelect.value,
+    overlayOpacity: overlayOpacityEl.value,
+    pixelEffect: pixelEffectSelect.value,
+    pixelEffectStrength: pixelEffectStrengthEl.value,
+    playStamp: playStampEl.checked,
+    batteryStamp: batteryStampEl.checked,
+    customStampText: customStampTextEl.value,
+    polaroidCaptionText: polaroidCaptionText.value,
+    polaroidCaptionNudge: polaroidCaptionNudge.value,
+    quality: qualityEl.value,
+    timestamp: timestampEl.checked,
+    vignette: vignetteEl.checked
+  };
+}
+
+function applyState(s) {
+  if (!s) return;
+  document.body.className = s.theme;
+  Object.keys(themeButtons).forEach(key => {
+    const name = s.theme === '' ? 'blue' : s.theme.replace('theme-', '');
+    themeButtons[key].classList.toggle('active', key === name);
+  });
+  activeLut = s.activeLut;
+  updateLutStripActive();
+  polaroidInkColor = s.polaroidInkColor;
+  inkSwatches.forEach(el => el.classList.toggle('active', el.dataset.color === s.polaroidInkColor));
+  leakSeed = { ...s.leakSeed };
+  presetEl.value = s.preset;
+  grainEl.value = s.grain; flashEl.value = s.flash; saturEl.value = s.satur; pixelEl.value = s.pixel;
+  fadeEl.value = s.fade; chromaEl.value = s.chroma; leakEl.value = s.leak; scanlinesEl.value = s.scanlines;
+  sharpenEl.value = s.sharpen; vibranceEl.value = s.vibrance; tvcurveEl.value = s.tvcurve;
+  redBalanceEl.value = s.redBalance; greenBalanceEl.value = s.greenBalance; blueBalanceEl.value = s.blueBalance;
+  borderSelect.value = s.border;
+  winFrameEl.checked = s.winFrame;
+  winFrameColorEl.value = s.winFrameColor;
+  winFrameColorHexEl.value = s.winFrameColor;
+  winFrameColorControls.style.display = s.winFrame ? 'flex' : 'none';
+  overlaySelect.value = s.overlay;
+  overlayOpacityEl.value = s.overlayOpacity;
+  pixelEffectSelect.value = s.pixelEffect;
+  pixelEffectStrengthEl.value = s.pixelEffectStrength;
+  playStampEl.checked = s.playStamp;
+  batteryStampEl.checked = s.batteryStamp;
+  customStampTextEl.value = s.customStampText;
+  polaroidCaptionText.value = s.polaroidCaptionText;
+  polaroidCaptionNudge.value = s.polaroidCaptionNudge;
+  polaroidCaptionControls.style.display = s.border === 'polaroid' ? 'block' : 'none';
+  qualityEl.value = s.quality;
+  timestampEl.checked = s.timestamp;
+  vignetteEl.checked = s.vignette;
+  syncLabels();
+  render();
+}
+
+// --- Undo/Redo history stack ---
+const historyStack = [];
+let historyIndex = -1;
+let isRestoringHistory = false;
+const HISTORY_LIMIT = 60;
+
+function pushHistory() {
+  if (isRestoringHistory || !sourceImg) return;
+  const snapshot = JSON.stringify(getState());
+  // skip if nothing actually changed since the last snapshot
+  if (historyIndex >= 0 && historyStack[historyIndex] === snapshot) return;
+  // if we'd undone some steps and now make a new edit, drop the redo branch
+  historyStack.splice(historyIndex + 1);
+  historyStack.push(snapshot);
+  if (historyStack.length > HISTORY_LIMIT) historyStack.shift();
+  historyIndex = historyStack.length - 1;
+  updateUndoRedoButtons();
+}
+
+function undo() {
+  if (historyIndex <= 0) return;
+  historyIndex--;
+  isRestoringHistory = true;
+  applyState(JSON.parse(historyStack[historyIndex]));
+  isRestoringHistory = false;
+  updateUndoRedoButtons();
+  statusLeft.textContent = 'Undo';
+}
+
+function redo() {
+  if (historyIndex >= historyStack.length - 1) return;
+  historyIndex++;
+  isRestoringHistory = true;
+  applyState(JSON.parse(historyStack[historyIndex]));
+  isRestoringHistory = false;
+  updateUndoRedoButtons();
+  statusLeft.textContent = 'Redo';
+}
+
+function updateUndoRedoButtons() {
+  const undoBtn = document.getElementById('menuUndo');
+  const redoBtn = document.getElementById('menuRedo');
+  if (undoBtn) undoBtn.disabled = historyIndex <= 0 || !sourceImg;
+  if (redoBtn) redoBtn.disabled = historyIndex >= historyStack.length - 1 || !sourceImg;
+}
+
+document.getElementById('menuUndo').addEventListener('click', () => { closeAllMenus(); undo(); });
+document.getElementById('menuRedo').addEventListener('click', () => { closeAllMenus(); redo(); });
+
+// keyboard shortcuts: Ctrl/Cmd+Z undo, Ctrl/Cmd+Shift+Z or Ctrl+Y redo
+document.addEventListener('keydown', (e) => {
+  const mod = e.ctrlKey || e.metaKey;
+  if (!mod) return;
+  if (e.key.toLowerCase() === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+  else if ((e.key.toLowerCase() === 'z' && e.shiftKey) || e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); }
+});
+
+// Debounced snapshot on any interaction within the controls panel, LUT strip,
+// menu, or theme swatches — covers all 46+ existing listeners without
+// having to thread history calls through each one individually.
+let historyDebounceTimer = null;
+function scheduleHistorySnapshot() {
+  if (isRestoringHistory) return;
+  clearTimeout(historyDebounceTimer);
+  historyDebounceTimer = setTimeout(pushHistory, 350);
+}
+['input', 'change', 'click'].forEach(evt => {
+  document.querySelector('.controls-panel').addEventListener(evt, scheduleHistorySnapshot);
+  lutStripEl.addEventListener(evt, scheduleHistorySnapshot);
+  document.querySelector('.theme-swatches').addEventListener(evt, scheduleHistorySnapshot);
+});
+document.getElementById('editMenu').addEventListener('click', scheduleHistorySnapshot);
+document.getElementById('effectsMenu').addEventListener('click', scheduleHistorySnapshot);
+
+// --- Save My Presets (localStorage) ---
+const PRESETS_KEY = 'y2kam_user_presets';
+
+function loadUserPresets() {
+  try {
+    return JSON.parse(localStorage.getItem(PRESETS_KEY) || '[]');
+  } catch (err) {
+    return [];
+  }
+}
+
+function saveUserPresets(list) {
+  try {
+    localStorage.setItem(PRESETS_KEY, JSON.stringify(list));
+  } catch (err) {
+    statusLeft.textContent = 'Could not save preset (storage full?)';
+  }
+}
+
+const myPresetsListEl = document.getElementById('myPresetsList');
+const savePresetBtn = document.getElementById('savePresetBtn');
+const savePresetNameEl = document.getElementById('savePresetName');
+
+function renderMyPresets() {
+  const presets = loadUserPresets();
+  myPresetsListEl.innerHTML = '';
+  if (presets.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'my-presets-empty';
+    empty.textContent = 'No saved presets yet — dial in a look, name it, and tap Save.';
+    myPresetsListEl.appendChild(empty);
+    return;
+  }
+  presets.forEach((p, idx) => {
+    const row = document.createElement('div');
+    row.className = 'my-preset-row';
+
+    const nameBtn = document.createElement('button');
+    nameBtn.type = 'button';
+    nameBtn.className = 'win95-btn my-preset-load';
+    nameBtn.textContent = p.name;
+    nameBtn.addEventListener('click', () => {
+      applyState(p.state);
+      pushHistory();
+      statusLeft.textContent = `Loaded preset "${p.name}"`;
+    });
+
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'win95-btn my-preset-delete';
+    delBtn.textContent = '✕';
+    delBtn.setAttribute('aria-label', `Delete preset ${p.name}`);
+    delBtn.addEventListener('click', () => {
+      const all = loadUserPresets();
+      all.splice(idx, 1);
+      saveUserPresets(all);
+      renderMyPresets();
+      statusLeft.textContent = `Deleted preset "${p.name}"`;
+    });
+
+    row.appendChild(nameBtn);
+    row.appendChild(delBtn);
+    myPresetsListEl.appendChild(row);
+  });
+}
+
+savePresetBtn.addEventListener('click', () => {
+  if (!sourceImg) return;
+  const name = (savePresetNameEl.value || '').trim().slice(0, 24) || `Preset ${loadUserPresets().length + 1}`;
+  const presets = loadUserPresets();
+  presets.push({ name, state: getState() });
+  saveUserPresets(presets);
+  savePresetNameEl.value = '';
+  renderMyPresets();
+  statusLeft.textContent = `Saved preset "${name}"`;
+});
+
+renderMyPresets();
+
+// --- Before/After hold button ---
+const beforeAfterBtn = document.getElementById('beforeAfterBtn');
+let preHoldSnapshot = null;
+
+function showOriginal() {
+  if (!sourceImg) return;
+  preHoldSnapshot = getState();
+  isRestoringHistory = true; // suppress history pushes while previewing
+  presetEl.value = 'clean';
+  grainEl.value = 0; flashEl.value = 0; saturEl.value = 100; pixelEl.value = 0;
+  fadeEl.value = 0; chromaEl.value = 0; leakEl.value = 0; scanlinesEl.value = 0;
+  sharpenEl.value = 0; vibranceEl.value = 0; tvcurveEl.value = 0;
+  redBalanceEl.value = 0; greenBalanceEl.value = 0; blueBalanceEl.value = 0;
+  overlaySelect.value = 'none';
+  pixelEffectSelect.value = 'none';
+  const savedLut = activeLut;
+  activeLut = 'none';
+  render();
+  activeLut = savedLut; // restore variable so UI/state stay correct once we release
+  isRestoringHistory = false;
+}
+
+function restoreAfterHold() {
+  if (!preHoldSnapshot) return;
+  isRestoringHistory = true;
+  applyState(preHoldSnapshot);
+  isRestoringHistory = false;
+  preHoldSnapshot = null;
+}
+
+beforeAfterBtn.addEventListener('mousedown', showOriginal);
+beforeAfterBtn.addEventListener('touchstart', (e) => { e.preventDefault(); showOriginal(); }, { passive: false });
+beforeAfterBtn.addEventListener('mouseup', restoreAfterHold);
+beforeAfterBtn.addEventListener('mouseleave', restoreAfterHold);
+beforeAfterBtn.addEventListener('touchend', restoreAfterHold);
+beforeAfterBtn.addEventListener('touchcancel', restoreAfterHold);
+
+// --- Compare slider (drag to reveal original vs edited) ---
+const compareToggleBtn = document.getElementById('compareToggleBtn');
+const compareOverlay = document.getElementById('compareOverlay');
+const compareHandle = document.getElementById('compareHandle');
+const compareOriginalCanvas = document.getElementById('compareOriginalCanvas');
+let compareActive = false;
+let compareDragging = false;
+
+function buildCompareOriginal() {
+  if (!sourceImg) return;
+  const w = canvas.width, h = canvas.height;
+  compareOriginalCanvas.width = w;
+  compareOriginalCanvas.height = h;
+  const octx = compareOriginalCanvas.getContext('2d');
+  octx.clearRect(0, 0, w, h);
+  octx.drawImage(sourceImg, 0, 0, w, h);
+  setComparePosition(50);
+}
+
+function setComparePosition(percent) {
+  const clamped = Math.max(0, Math.min(100, percent));
+  compareOriginalCanvas.style.clipPath = `inset(0 ${100 - clamped}% 0 0)`;
+  compareHandle.style.left = clamped + '%';
+}
+
+compareToggleBtn.addEventListener('click', () => {
+  if (!sourceImg) return;
+  compareActive = !compareActive;
+  compareToggleBtn.classList.toggle('active', compareActive);
+  if (compareActive) {
+    buildCompareOriginal();
+    compareOverlay.style.display = 'block';
+  } else {
+    compareOverlay.style.display = 'none';
+  }
+});
+
+function handleCompareDrag(clientX) {
+  const rect = canvasWrap.getBoundingClientRect();
+  const percent = ((clientX - rect.left) / rect.width) * 100;
+  setComparePosition(percent);
+}
+
+compareHandle.addEventListener('mousedown', (e) => { compareDragging = true; e.preventDefault(); });
+compareHandle.addEventListener('touchstart', (e) => { compareDragging = true; e.preventDefault(); }, { passive: false });
+document.addEventListener('mousemove', (e) => { if (compareDragging) handleCompareDrag(e.clientX); });
+document.addEventListener('touchmove', (e) => { if (compareDragging && e.touches[0]) handleCompareDrag(e.touches[0].clientX); }, { passive: true });
+document.addEventListener('mouseup', () => { compareDragging = false; });
+document.addEventListener('touchend', () => { compareDragging = false; });
+
+// Keep the compare overlay's original-image canvas in sync whenever a new
+// render happens while compare mode is on (e.g. after loading a new photo).
+const originalRenderFn = render;
+render = function() {
+  originalRenderFn();
+  if (compareActive) buildCompareOriginal();
+};
+
+syncLabels();
