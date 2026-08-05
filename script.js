@@ -3060,10 +3060,50 @@ function renderCollageSlotList() {
       renderCollageOptionGrids();
       updateCollagePreviewState();
     });
+
+    const reorder = document.createElement('div');
+    reorder.className = 'collage-slot-reorder';
+
+    const moveLeft = document.createElement('div');
+    moveLeft.className = 'collage-slot-move collage-slot-move-left';
+    moveLeft.textContent = '‹';
+    moveLeft.title = 'Move left';
+    if (i === 0) moveLeft.classList.add('disabled');
+    moveLeft.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      if (i === 0) return;
+      reorderCollageSlot(i, i - 1);
+    });
+
+    const moveRight = document.createElement('div');
+    moveRight.className = 'collage-slot-move collage-slot-move-right';
+    moveRight.textContent = '›';
+    moveRight.title = 'Move right';
+    if (i === collageSlots.length - 1) moveRight.classList.add('disabled');
+    moveRight.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      if (i === collageSlots.length - 1) return;
+      reorderCollageSlot(i, i + 1);
+    });
+
+    reorder.appendChild(moveLeft);
+    reorder.appendChild(moveRight);
+
     thumb.appendChild(thumbCanvas);
     thumb.appendChild(remove);
+    thumb.appendChild(reorder);
     collageSlotListEl.appendChild(thumb);
   });
+}
+
+// Swaps two slots by index (used by the reorder arrow buttons). Cell/layout
+// assignment is just array order, so this is a plain array swap + re-render.
+function reorderCollageSlot(fromIndex, toIndex) {
+  const tmp = collageSlots[fromIndex];
+  collageSlots[fromIndex] = collageSlots[toIndex];
+  collageSlots[toIndex] = tmp;
+  renderCollageSlotList();
+  updateCollagePreviewState();
 }
 
 // ---- Enter/exit per-slot editing in the main editor ----
