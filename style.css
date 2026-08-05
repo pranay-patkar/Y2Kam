@@ -322,7 +322,23 @@
     border: none;
     padding: 0;
     font-family: inherit;
+    position: relative;
   }
+  .lut-pin-btn {
+    position: absolute;
+    top: -2px;
+    right: -2px;
+    width: 14px;
+    height: 14px;
+    line-height: 14px;
+    font-size: 11px;
+    text-align: center;
+    background: rgba(255,255,255,0.85);
+    color: #999;
+    z-index: 2;
+    cursor: pointer;
+  }
+  .lut-pin-btn.pinned { color: #e8b800; }
   .lut-swatch-thumb {
     width: 52px;
     height: 52px;
@@ -346,6 +362,55 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .lut-favorites-bar {
+    display: none;
+    gap: 5px;
+    overflow-x: auto;
+    padding: 2px 2px 6px;
+    margin-bottom: 2px;
+    border-bottom: 1px dashed var(--inset-border-dark);
+    -webkit-overflow-scrolling: touch;
+  }
+  .lut-fav-swatch {
+    flex-shrink: 0;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    background: none;
+    border: none;
+    cursor: pointer;
+  }
+  .lut-fav-swatch .lut-swatch-thumb {
+    width: 34px;
+    height: 34px;
+  }
+  .lut-fav-swatch.active .lut-swatch-thumb {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+
+  .session-restore-banner {
+    position: fixed;
+    left: 50%;
+    bottom: 16px;
+    transform: translateX(-50%);
+    z-index: 999;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--win-bg, #efefef);
+    border: 2px solid var(--win-border-light);
+    border-right-color: var(--win-border-dark);
+    border-bottom-color: var(--win-border-dark);
+    padding: 8px 10px;
+    font-size: 11px;
+    max-width: 90vw;
+    box-shadow: 2px 2px 8px rgba(0,0,0,0.35);
+  }
+  .session-restore-banner span {
+    max-width: 220px;
   }
 
   .canvas-wrap {
