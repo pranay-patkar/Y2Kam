@@ -68,15 +68,18 @@
             NO IMAGE LOADED<span class="blink">_</span><br><br>
             [ Tap "Open Photo..." below ]
           </div>
-          <canvas id="canvas" style="display:none;"></canvas>
 
-          <div class="compare-overlay" id="compareOverlay" style="display:none;">
-            <canvas id="compareOriginalCanvas"></canvas>
-            <div class="compare-handle" id="compareHandle">
-              <div class="compare-handle-grip">◂▸</div>
+          <div class="zoom-target" id="zoomTarget">
+            <canvas id="canvas" style="display:none;"></canvas>
+
+            <div class="compare-overlay" id="compareOverlay" style="display:none;">
+              <canvas id="compareOriginalCanvas"></canvas>
+              <div class="compare-handle" id="compareHandle">
+                <div class="compare-handle-grip">◂▸</div>
+              </div>
+              <span class="compare-label compare-label-before">BEFORE</span>
+              <span class="compare-label compare-label-after">AFTER</span>
             </div>
-            <span class="compare-label compare-label-before">BEFORE</span>
-            <span class="compare-label compare-label-after">AFTER</span>
           </div>
 
           <div class="canvas-tool-row">
@@ -352,9 +355,37 @@
 
           <div class="button-row">
             <button class="win95-btn primary" id="openBtn" type="button">Open Photo...</button>
+            <button class="win95-btn" id="takePhotoBtn" type="button">📷 Take Photo</button>
+          </div>
+          <div class="button-row">
             <button class="win95-btn" id="saveBtn" disabled type="button">Save As...</button>
           </div>
           <input type="file" id="fileInput" accept="image/*">
+          <input type="file" id="cameraInput" accept="image/*" capture="environment">
+        </details>
+
+        <details class="section-group">
+          <summary class="section-label">Batch Export</summary>
+          <div class="batch-note">Applies your current look to multiple photos at once.</div>
+          <div class="button-row">
+            <button class="win95-btn" id="batchSelectBtn" type="button">Select Photos...</button>
+          </div>
+          <input type="file" id="batchFileInput" accept="image/*" multiple>
+          <div id="batchFileList" class="batch-file-list"></div>
+          <div class="button-row">
+            <button class="win95-btn primary" id="batchProcessBtn" type="button" disabled>Process &amp; Download All</button>
+          </div>
+          <div class="field-row" id="batchProgressRow" style="display:none;">
+            <span class="val" id="batchProgressText" style="width:auto;">—</span>
+          </div>
+        </details>
+
+        <details class="section-group">
+          <summary class="section-label">Collage</summary>
+          <div class="batch-note">Combine 2–6 photos into one image with a layout and frame.</div>
+          <div class="button-row">
+            <button class="win95-btn primary" id="collageOpenBtn" type="button">Open Collage Maker...</button>
+          </div>
         </details>
       </div>
     </div>
@@ -382,6 +413,53 @@
     </div>
     <div class="modal-footer">
       <button class="win95-btn" id="aboutCloseBtn" type="button">OK</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="collageOverlay">
+  <div class="modal-dialog collage-dialog">
+    <div class="modal-titlebar">
+      <span>Collage Maker</span>
+      <div class="win-buttons">
+        <div class="win-btn" id="collageCloseX">×</div>
+      </div>
+    </div>
+    <div class="modal-body collage-body">
+
+      <div class="collage-note">Pick 2–6 photos, a layout, and a frame. (Photos use their original look for now — per-photo editing is coming next.)</div>
+
+      <div class="button-row">
+        <button class="win95-btn primary" id="collageSelectBtn" type="button">Select Photos...</button>
+      </div>
+      <input type="file" id="collageFileInput" accept="image/*" multiple>
+      <div id="collageSlotList" class="collage-slot-list"></div>
+
+      <div class="collage-section-title">Layout</div>
+      <div class="collage-option-grid" id="collageLayoutGrid"></div>
+
+      <div class="collage-section-title">Frame</div>
+      <div class="collage-option-grid" id="collageFrameGrid"></div>
+
+      <div class="field-row">
+        <label for="collageGutter">Gutter</label>
+        <input type="range" id="collageGutter" min="0" max="40" value="14">
+        <span class="val" id="collageGutterVal">14px</span>
+      </div>
+      <div class="field-row">
+        <label for="collageBgColor">Background</label>
+        <input type="color" id="collageBgColor" value="#ffffff">
+      </div>
+
+      <div class="collage-preview-wrap">
+        <canvas id="collagePreviewCanvas"></canvas>
+        <div class="collage-preview-empty" id="collagePreviewEmpty">Add at least 2 photos to preview</div>
+      </div>
+
+      <div class="button-row">
+        <button class="win95-btn" id="collageGenerateBtn" type="button" disabled>Generate Preview</button>
+        <button class="win95-btn primary" id="collageDownloadBtn" type="button" disabled>Download Collage</button>
+      </div>
     </div>
   </div>
 </div>
