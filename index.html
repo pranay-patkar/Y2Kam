@@ -431,7 +431,7 @@
     </div>
     <div class="modal-body collage-body">
 
-      <div class="collage-note">Pick 2–6 photos, a layout, and a frame. (Photos use their original look for now — per-photo editing is coming next.)</div>
+      <div class="collage-note">Pick 2–6 photos, a layout, and a frame — then tap any photo to edit its look in the main editor.</div>
 
       <div class="button-row">
         <button class="win95-btn primary" id="collageSelectBtn" type="button">Select Photos...</button>
@@ -445,6 +445,10 @@
       <div class="collage-section-title">Frame</div>
       <div class="collage-option-grid" id="collageFrameGrid"></div>
 
+      <div class="collage-section-title">Moods</div>
+      <div class="collage-mood-row" id="collageMoodRow"></div>
+      <div class="collage-note collage-sticker-hint">Applies a matching look, frame, and layout to every photo at once.</div>
+
       <div class="field-row">
         <label for="collageGutter">Gutter</label>
         <input type="range" id="collageGutter" min="0" max="40" value="14">
@@ -454,6 +458,22 @@
         <label for="collageBgColor">Background</label>
         <input type="color" id="collageBgColor" value="#ffffff">
       </div>
+
+      <div class="collage-section-title">Caption</div>
+      <div class="field-row">
+        <input type="text" id="collageCaptionText" class="win95-input" maxlength="60" placeholder="Add a title or caption..." style="flex:1;">
+      </div>
+
+      <div class="collage-section-title">Stickers</div>
+      <div class="collage-sticker-palette" id="collageStickerPalette"></div>
+      <div class="collage-note collage-sticker-hint">Tap a sticker to place it, drag to move, tap the × to remove.</div>
+
+      <div class="collage-section-title">My Layouts</div>
+      <div class="field-row">
+        <input type="text" id="collageLayoutPresetName" class="win95-input" maxlength="24" placeholder="Layout preset name..." style="flex:1;">
+        <button class="win95-btn" id="collageSaveLayoutPresetBtn" type="button">Save Layout</button>
+      </div>
+      <div id="collageLayoutPresetList" class="my-presets-list collage-layout-preset-list"></div>
 
       <div class="collage-preview-wrap">
         <canvas id="collagePreviewCanvas"></canvas>
@@ -467,6 +487,7 @@
     </div>
   </div>
 </div>
+
 
 <div class="modal-overlay" id="processingOverlay">
   <div class="modal-dialog processing-dialog">
