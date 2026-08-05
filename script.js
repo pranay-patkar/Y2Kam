@@ -2128,7 +2128,7 @@ function applyState(s) {
 }
 
 // --- Undo/Redo history stack ---
-const historyStack = [];
+let historyStack = [];
 let historyIndex = -1;
 let isRestoringHistory = false;
 const HISTORY_LIMIT = 60;
@@ -3123,6 +3123,18 @@ function startEditingCollageSlot(index) {
 
   editingCollageSlotIndex = index;
 
+  // isolate undo/redo: stash the main editor's history stack and give this
+  // slot-editing session its own, so undo/redo while editing a collage
+  // photo can't step into the user's main photo's history and vice versa
+  stashedMainEditor.historyStack = historyStack;
+  stashedMainEditor.historyIndex = historyIndex;
+  historyStack = slot.historyStack ? slot.historyStack.slice() : [];
+  historyIndex = slot.historyIndex !== undefined ? slot.historyIndex : -1;
+  if (historyStack.length === 0) {
+    historyStack = [JSON.stringify(slot.state)];
+    historyIndex = 0;
+  }
+
   sourceImg = slot.img;
   isPlaceholderImage = false;
   fixedTimestamp = slot.fixedTimestamp;
@@ -3141,6 +3153,7 @@ function startEditingCollageSlot(index) {
   collageEditBannerText.textContent = `Editing Collage Photo ${index + 1} of ${collageSlots.length}`;
   collageEditBanner.style.display = 'flex';
   collageOverlay.classList.remove('open');
+  updateUndoRedoButtons();
 }
 
 function finishEditingCollageSlot() {
@@ -3153,6 +3166,13 @@ function finishEditingCollageSlot() {
   slot.leakSeed = { ...leakSeed };
   slot.edited = true;
   slot.editedCanvas = renderSlotEditedCanvas(slot, 200);
+
+  // save this slot's history so it resumes correctly if re-opened, then
+  // restore the main editor's own undo/redo stack
+  slot.historyStack = historyStack;
+  slot.historyIndex = historyIndex;
+  historyStack = stashedMainEditor.historyStack || [];
+  historyIndex = stashedMainEditor.historyIndex !== undefined ? stashedMainEditor.historyIndex : -1;
 
   editingCollageSlotIndex = null;
   collageEditBanner.style.display = 'none';
@@ -3179,6 +3199,7 @@ function finishEditingCollageSlot() {
 
   renderCollageSlotList();
   collageOverlay.classList.add('open');
+  updateUndoRedoButtons();
 }
 
 collageDoneEditingBtn.addEventListener('click', finishEditingCollageSlot);
