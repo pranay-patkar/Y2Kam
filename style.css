@@ -1009,3 +1009,72 @@
     flex: none;
     padding: 3px 12px;
   }
+
+  /* Sticker palette + placed sticker chips */
+  .collage-sticker-palette {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 6px 0;
+  }
+  .collage-sticker-btn {
+    width: 36px;
+    height: 36px;
+    font-size: 18px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #fff;
+  }
+  .collage-sticker-hint {
+    font-size: 10px;
+    padding: 0 0 8px;
+  }
+  .collage-sticker-layer {
+    position: absolute;
+    inset: 4px;
+    pointer-events: none;
+  }
+  .collage-sticker-chip {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    font-size: 22px;
+    line-height: 1;
+    cursor: grab;
+    pointer-events: auto;
+    touch-action: none;
+    user-select: none;
+  }
+  .collage-sticker-chip:active { cursor: grabbing; }
+  .collage-sticker-chip-remove {
+    position: absolute;
+    top: -8px;
+    right: -10px;
+    width: 14px;
+    height: 14px;
+    line-height: 14px;
+    font-size: 10px;
+    text-align: center;
+    background: #000;
+    color: #fff;
+    border-radius: 50%;
+    cursor: pointer;
+  }
+
+  /* Mood row */
+  .collage-mood-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 6px 0;
+  }
+  .collage-mood-btn {
+    font-size: 10px;
+    padding: 5px 10px;
+  }
+
+  .collage-layout-preset-list {
+    max-height: 100px;
+    overflow-y: auto;
+  }
