@@ -727,6 +727,10 @@ buildLutStrip();
 })();
 
 offerSessionRestore();
+// NOTE: tryLoadLookFromUrl() is called further down, AFTER
+// `let pendingRestoredState` is declared — calling it here would hit
+// the temporal-dead-zone of that `let` and throw when a ?look= param
+// is actually present.
 
 function applyPreset(name) {
   const p = presets[name];
@@ -828,9 +832,19 @@ function loadImageFile(file, sourceLabel) {
       menuResetBtn.disabled = false;
       menuRandomizeBtn.disabled = false;
       menuShuffleLookBtn.disabled = false;
+      // Stage 1: enable Copy Link + Crop buttons now that a real photo is loaded
+      const copyLookLinkBtnEl = document.getElementById('copyLookLinkBtn');
+      if (copyLookLinkBtnEl) copyLookLinkBtnEl.disabled = false;
+      const openCropBtnEl = document.getElementById('openCropBtn');
+      if (openCropBtnEl) openCropBtnEl.disabled = false;
       fixedTimestamp = randomTimestamp();
       fixedExifData = randomExifData();
       randomizeLeakSeed();
+      // Stage 1: reset crop state on each new photo so the previous photo's
+      // crop doesn't carry over (HANDOVER-4 §4).
+      cropRect = null;
+      cropRotateDeg = 0;
+      updateCropActiveIndicator();
       if (pendingRestoredState) {
         applyState(pendingRestoredState);
         pendingRestoredState = null;
@@ -884,6 +898,30 @@ canvasWrap.addEventListener('drop', (e) => {
     dt.items.add(file);
     fileInput.files = dt.files;
     fileInput.dispatchEvent(new Event('change'));
+  }
+});
+
+// --- Paste from clipboard (image only) ---
+// Stage 1: grab an image pasted anywhere in the document (Ctrl/Cmd+V) and
+// load it just like a normal file-open. Skipped while a collage slot is
+// being edited so the user can paste text into caption fields mid-edit.
+document.addEventListener('paste', (e) => {
+  if (editingCollageSlotIndex !== null) return;
+  // Don't hijack pastes that happen inside an input/textarea — those are
+  // almost certainly the user pasting text into a caption field.
+  const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
+  if (tag === 'input' || tag === 'textarea') return;
+  const items = e.clipboardData && e.clipboardData.items;
+  if (!items) return;
+  for (let i = 0; i < items.length; i++) {
+    if (items[i].type.startsWith('image/')) {
+      const file = items[i].getAsFile();
+      if (file) {
+        loadImageFile(file, 'Pasted image');
+        statusLeft.textContent = 'Image pasted from clipboard';
+      }
+      break;
+    }
   }
 });
 
@@ -2310,6 +2348,10 @@ function offerSessionRestore() {
 // holds a state pulled from a restored session until the next photo loads
 let pendingRestoredState = null;
 
+// Stage 1: decode ?look=<base64> from URL (must run after pendingRestoredState
+// is declared above; function is hoisted but the variable isn't).
+tryLoadLookFromUrl();
+
 function undo() {
   if (historyIndex <= 0) return;
   historyIndex--;
@@ -2444,6 +2486,69 @@ savePresetBtn.addEventListener('click', () => {
 
 renderMyPresets();
 
+// --- Shareable look link (Stage 1) ---
+// Encodes getState() as base64 into the URL query param ?look=<...> so the
+// recipient can paste the link and have the same filter stack auto-applied
+// the next time they open a photo. No backend; entirely client-side.
+function encodeLookToUrl() {
+  try {
+    const json = JSON.stringify(getState());
+    // btoa expects Latin-1; use the unescape/encodeURIComponent trick so
+    // unicode chars in customStampText / polaroidCaptionText survive.
+    const b64 = btoa(unescape(encodeURIComponent(json)));
+    const url = new URL(window.location.href);
+    url.search = '';               // clear any existing params
+    url.searchParams.set('look', b64);
+    return url.toString();
+  } catch (err) {
+    return null;
+  }
+}
+
+const copyLookLinkBtn = document.getElementById('copyLookLinkBtn');
+if (copyLookLinkBtn) {
+  copyLookLinkBtn.addEventListener('click', () => {
+    if (!sourceImg) return;
+    const url = encodeLookToUrl();
+    if (!url) { statusLeft.textContent = 'Could not generate link'; return; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).then(() => {
+        const fb = document.getElementById('copyLookLinkFeedback');
+        if (fb) {
+          fb.style.display = 'block';
+          setTimeout(() => { fb.style.display = 'none'; }, 2200);
+        }
+        statusLeft.textContent = 'Shareable link copied';
+      }).catch(() => {
+        // Fallback for browsers/contexts where clipboard API is blocked
+        prompt('Copy this link:', url);
+      });
+    } else {
+      prompt('Copy this link:', url);
+    }
+  });
+}
+
+// On load, check for a ?look= param and queue it as a pending restore
+// (same path as session restore — applied on the next photo load).
+function tryLoadLookFromUrl() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const b64 = params.get('look');
+    if (!b64) return;
+    const json = decodeURIComponent(escape(atob(b64)));
+    const state = JSON.parse(json);
+    if (state && typeof state === 'object') {
+      pendingRestoredState = state;
+      statusLeft.textContent = 'Shared look ready — open a photo to apply it';
+      // Clean the URL so refreshing doesn't re-apply it unexpectedly
+      const clean = new URL(window.location.href);
+      clean.search = '';
+      window.history.replaceState({}, '', clean.toString());
+    }
+  } catch (err) { /* malformed param — silently ignore */ }
+}
+
 // --- Before/After hold button ---
 const beforeAfterBtn = document.getElementById('beforeAfterBtn');
 let preHoldSnapshot = null;
@@ -2540,6 +2645,291 @@ render = function() {
 };
 
 syncLabels();
+
+// =============================================================
+// CROP & STRAIGHTEN (Stage 1)
+// Stores crop as normalised rects (0–1) so it scales to any
+// export resolution. Applied in a pre-pass before drawEffects.
+// cropRect = { x, y, w, h } in source-image fraction space.
+// null = no crop active (full image).
+// =============================================================
+
+let cropRect = null;       // { x, y, w, h } fractions; null = uncropped
+let cropRotateDeg = 0;     // degrees, –45 to 45
+
+// Pre-draws sourceImg with current crop+rotate into an offscreen canvas,
+// returns it. If no crop/rotate, returns null (caller uses sourceImg directly).
+// Called at the top of the patched drawEffects each time.
+function getCroppedSourceCanvas() {
+  if (!sourceImg) return null;
+  const hasRotate = cropRotateDeg !== 0;
+  const hasCrop = cropRect !== null;
+  if (!hasRotate && !hasCrop) return null;
+
+  const iw = sourceImg.naturalWidth;
+  const ih = sourceImg.naturalHeight;
+  const rad = cropRotateDeg * Math.PI / 180;
+
+  // 1. Draw rotated source into a temp canvas (same size as source; corners
+  //    may show black fill — known cosmetic limit per HANDOVER-4 §2).
+  const rotCanvas = document.createElement('canvas');
+  rotCanvas.width = iw;
+  rotCanvas.height = ih;
+  const rctx = rotCanvas.getContext('2d');
+  rctx.translate(iw / 2, ih / 2);
+  rctx.rotate(rad);
+  rctx.drawImage(sourceImg, -iw / 2, -ih / 2, iw, ih);
+
+  if (!hasCrop) return rotCanvas;
+
+  // 2. Crop from the rotated result
+  const cx = Math.round(cropRect.x * iw);
+  const cy = Math.round(cropRect.y * ih);
+  const cw = Math.round(cropRect.w * iw);
+  const ch = Math.round(cropRect.h * ih);
+  const cropCanvas = document.createElement('canvas');
+  cropCanvas.width = Math.max(1, cw);
+  cropCanvas.height = Math.max(1, ch);
+  cropCanvas.getContext('2d').drawImage(rotCanvas, cx, cy, cw, ch, 0, 0, cw, ch);
+  return cropCanvas;
+}
+
+// Patch drawEffects to substitute the pre-cropped canvas when active.
+// We swap module-level `sourceImg` for the duration of the call.
+const _originalDrawEffects = drawEffects;
+drawEffects = function(targetCanvas, w, h) {
+  const prepped = getCroppedSourceCanvas();
+  if (prepped) {
+    const realSourceImg = sourceImg;
+    sourceImg = prepped;
+    _originalDrawEffects(targetCanvas, w, h);
+    sourceImg = realSourceImg;
+  } else {
+    _originalDrawEffects(targetCanvas, w, h);
+  }
+};
+
+// Add crop state to getState / applyState so it survives undo/redo and
+// session-restore. Crop is per-photo, so it's part of the per-photo state
+// bundle (NOT shared across collage slots or batch exports).
+const _origGetState = getState;
+getState = function() {
+  const s = _origGetState();
+  s.cropRect = cropRect ? { ...cropRect } : null;
+  s.cropRotateDeg = cropRotateDeg;
+  return s;
+};
+
+const _origApplyState = applyState;
+applyState = function(s) {
+  cropRect = (s && s.cropRect) ? { ...s.cropRect } : null;
+  cropRotateDeg = (s && s.cropRotateDeg !== undefined) ? s.cropRotateDeg : 0;
+  updateCropActiveIndicator();
+  _origApplyState(s);
+};
+
+function updateCropActiveIndicator() {
+  const indicator = document.getElementById('cropActiveIndicator');
+  if (!indicator) return;
+  const active = cropRect !== null || cropRotateDeg !== 0;
+  indicator.style.display = active ? 'block' : 'none';
+}
+
+// --- Crop modal UI ---
+const cropOverlay = document.getElementById('cropOverlay');
+const cropCanvas  = document.getElementById('cropCanvas');
+const cropCctx    = cropCanvas ? cropCanvas.getContext('2d') : null;
+const cropCanvasWrap = document.getElementById('cropCanvasWrap');
+const cropRectOverlay = document.getElementById('cropRectOverlay');
+const cropRotateSlider = document.getElementById('cropRotateSlider');
+const cropRotateVal = document.getElementById('cropRotateVal');
+
+// Working state local to the modal — committed on Apply, discarded on ×
+let _modalCropRect = null;
+let _modalRotateDeg = 0;
+
+// Drag state
+let _cropDragStartX = 0, _cropDragStartY = 0;
+let _cropDragging = false;
+let _cropActivePointerId = null;
+
+function openCropModal() {
+  if (!sourceImg || isPlaceholderImage) return;
+  // Seed modal working state from current crop state
+  _modalCropRect   = cropRect ? { ...cropRect } : null;
+  _modalRotateDeg  = cropRotateDeg;
+  if (cropRotateSlider) {
+    cropRotateSlider.value = _modalRotateDeg;
+    cropRotateVal.textContent = _modalRotateDeg + '°';
+  }
+  cropOverlay.classList.add('open');
+  // Defer one frame so the modal has actually laid out (clientWidth is 0
+  // while the overlay is display:none — calling drawCropPreview() too early
+  // would size the canvas to 0 and never recover).
+  requestAnimationFrame(() => { drawCropPreview(); updateCropRectOverlay(); });
+}
+
+// Draws sourceImg (rotated by _modalRotateDeg) into #cropCanvas at display size
+function drawCropPreview() {
+  if (!cropCanvas || !cropCctx || !sourceImg) return;
+  const iw = sourceImg.naturalWidth;
+  const ih = sourceImg.naturalHeight;
+  const displayW = (cropCanvasWrap && cropCanvasWrap.clientWidth) || 360;
+  const displayH = Math.round(displayW * (ih / iw));
+  cropCanvas.width = displayW;
+  cropCanvas.height = displayH;
+  cropCctx.clearRect(0, 0, displayW, displayH);
+  cropCctx.save();
+  cropCctx.fillStyle = '#111';
+  cropCctx.fillRect(0, 0, displayW, displayH);
+  cropCctx.translate(displayW / 2, displayH / 2);
+  cropCctx.rotate(_modalRotateDeg * Math.PI / 180);
+  cropCctx.drawImage(sourceImg, -displayW / 2, -displayH / 2, displayW, displayH);
+  cropCctx.restore();
+}
+
+// Positions the CSS crop-rect div to reflect _modalCropRect
+function updateCropRectOverlay() {
+  if (!cropRectOverlay || !cropCanvas) return;
+  const w = cropCanvas.offsetWidth  || cropCanvas.width;
+  const h = cropCanvas.offsetHeight || cropCanvas.height;
+  if (!_modalCropRect) {
+    // No crop — overlay invisible (full-area dim handled by canvas border)
+    cropRectOverlay.style.left   = '0px';
+    cropRectOverlay.style.top    = '0px';
+    cropRectOverlay.style.width  = w + 'px';
+    cropRectOverlay.style.height = h + 'px';
+    cropRectOverlay.style.opacity = '0';
+  } else {
+    cropRectOverlay.style.left   = Math.round(_modalCropRect.x * w) + 'px';
+    cropRectOverlay.style.top    = Math.round(_modalCropRect.y * h) + 'px';
+    cropRectOverlay.style.width  = Math.round(_modalCropRect.w * w) + 'px';
+    cropRectOverlay.style.height = Math.round(_modalCropRect.h * h) + 'px';
+    cropRectOverlay.style.opacity = '1';
+  }
+}
+
+// Pointer events for dragging a new crop rect
+function cropPointerToFrac(clientX, clientY) {
+  const rect = cropCanvas.getBoundingClientRect();
+  return {
+    x: Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)),
+    y: Math.max(0, Math.min(1, (clientY - rect.top)  / rect.height))
+  };
+}
+
+if (cropCanvasWrap) {
+  cropCanvasWrap.addEventListener('pointerdown', (e) => {
+    _cropDragging = true;
+    _cropActivePointerId = e.pointerId;
+    cropCanvasWrap.setPointerCapture(e.pointerId);
+    const p = cropPointerToFrac(e.clientX, e.clientY);
+    _cropDragStartX = p.x;
+    _cropDragStartY = p.y;
+    _modalCropRect = { x: p.x, y: p.y, w: 0, h: 0 };
+    updateCropRectOverlay();
+  });
+
+  cropCanvasWrap.addEventListener('pointermove', (e) => {
+    if (!_cropDragging) return;
+    const p = cropPointerToFrac(e.clientX, e.clientY);
+    const x = Math.min(_cropDragStartX, p.x);
+    const y = Math.min(_cropDragStartY, p.y);
+    const w = Math.abs(p.x - _cropDragStartX);
+    const h = Math.abs(p.y - _cropDragStartY);
+    _modalCropRect = { x, y, w: Math.max(0.01, w), h: Math.max(0.01, h) };
+    updateCropRectOverlay();
+  });
+
+  const _finishCropDrag = (e) => {
+    if (!_cropDragging) return;
+    _cropDragging = false;
+    if (_cropActivePointerId !== null && e && e.pointerId === _cropActivePointerId) {
+      try { cropCanvasWrap.releasePointerCapture(_cropActivePointerId); } catch (_) {}
+    }
+    _cropActivePointerId = null;
+    // If the dragged area is tiny (a mis-tap), treat as "no crop"
+    if (_modalCropRect && (_modalCropRect.w < 0.02 || _modalCropRect.h < 0.02)) {
+      _modalCropRect = null;
+    }
+    updateCropRectOverlay();
+  };
+  cropCanvasWrap.addEventListener('pointerup', _finishCropDrag);
+  cropCanvasWrap.addEventListener('pointercancel', _finishCropDrag);
+
+  // Rotate slider
+  if (cropRotateSlider) {
+    cropRotateSlider.addEventListener('input', () => {
+      _modalRotateDeg = parseInt(cropRotateSlider.value, 10);
+      cropRotateVal.textContent = _modalRotateDeg + '°';
+      drawCropPreview();
+      updateCropRectOverlay();
+    });
+  }
+
+  // Reset inside modal
+  const cropResetInModalBtn = document.getElementById('cropResetInModalBtn');
+  if (cropResetInModalBtn) {
+    cropResetInModalBtn.addEventListener('click', () => {
+      _modalCropRect = null;
+      _modalRotateDeg = 0;
+      if (cropRotateSlider) cropRotateSlider.value = 0;
+      if (cropRotateVal) cropRotateVal.textContent = '0°';
+      drawCropPreview();
+      updateCropRectOverlay();
+    });
+  }
+
+  // Apply
+  const cropApplyBtn = document.getElementById('cropApplyBtn');
+  if (cropApplyBtn) {
+    cropApplyBtn.addEventListener('click', () => {
+      cropRect = _modalCropRect;
+      cropRotateDeg = _modalRotateDeg;
+      cropOverlay.classList.remove('open');
+      updateCropActiveIndicator();
+      render();
+      pushHistory();
+      statusLeft.textContent = (cropRect || cropRotateDeg !== 0) ? 'Crop applied' : 'Crop reset';
+    });
+  }
+
+  // × close (discard)
+  const cropCloseX = document.getElementById('cropCloseX');
+  if (cropCloseX) {
+    cropCloseX.addEventListener('click', () => cropOverlay.classList.remove('open'));
+  }
+  cropOverlay.addEventListener('click', (e) => {
+    if (e.target === cropOverlay) cropOverlay.classList.remove('open');
+  });
+
+  // Open button
+  const openCropBtn = document.getElementById('openCropBtn');
+  if (openCropBtn) {
+    openCropBtn.addEventListener('click', openCropModal);
+  }
+
+  // Reset crop button in controls panel (shown when crop is active)
+  const resetCropBtn = document.getElementById('resetCropBtn');
+  if (resetCropBtn) {
+    resetCropBtn.addEventListener('click', () => {
+      cropRect = null;
+      cropRotateDeg = 0;
+      updateCropActiveIndicator();
+      render();
+      pushHistory();
+      statusLeft.textContent = 'Crop reset';
+    });
+  }
+}
+
+// Re-layout the crop canvas on window resize while the modal is open.
+window.addEventListener('resize', () => {
+  if (cropOverlay && cropOverlay.classList.contains('open')) {
+    drawCropPreview();
+    updateCropRectOverlay();
+  }
+});
 
 // --- Pinch-to-zoom on the canvas preview ---
 // Purely a view-level zoom (CSS transform on zoomTarget) so pinching stays
@@ -2713,6 +3103,10 @@ async function processBatch() {
   const savedTimestamp = fixedTimestamp;
   const savedExifData = fixedExifData;
   const savedLeakSeed = { ...leakSeed };
+  // Stage 1 (crop): save/restore crop too — batch photos are fresh, they
+  // must NOT inherit the user's current crop from the main editor.
+  const savedCropRect = cropRect;
+  const savedCropRotateDeg = cropRotateDeg;
 
   const quality = parseInt(qualityEl.value, 10) / 100;
   const exportMaxDim = 1600;
@@ -2732,6 +3126,10 @@ async function processBatch() {
       fixedTimestamp = randomTimestamp();
       fixedExifData = randomExifData();
       randomizeLeakSeed();
+      // Each batch photo is fresh — no crop should be applied even if the
+      // user has one active in the main editor right now.
+      cropRect = null;
+      cropRotateDeg = 0;
 
       let w = img.naturalWidth, h = img.naturalHeight;
       const scale = Math.min(1, exportMaxDim / Math.max(w, h));
@@ -2764,6 +3162,8 @@ async function processBatch() {
   fixedTimestamp = savedTimestamp;
   fixedExifData = savedExifData;
   leakSeed = savedLeakSeed;
+  cropRect = savedCropRect;
+  cropRotateDeg = savedCropRotateDeg;
   render();
 
   batchProgressText.textContent = `Done — ${successCount} of ${batchFiles.length} exported`;
@@ -2806,11 +3206,18 @@ function renderSlotEditedCanvas(slot, maxDim) {
   const savedTimestamp = fixedTimestamp;
   const savedExifData = fixedExifData;
   const savedLeakSeed = { ...leakSeed };
+  // Stage 1 (crop): save/restore module-level crop vars too, so each slot
+  // gets its OWN crop applied (from slot.state.cropRect / cropRotateDeg)
+  // instead of inheriting the main editor's current crop.
+  const savedCropRect = cropRect;
+  const savedCropRotateDeg = cropRotateDeg;
 
   sourceImg = slot.img;
   fixedTimestamp = slot.fixedTimestamp;
   fixedExifData = slot.fixedExifData;
   leakSeed = { ...slot.leakSeed };
+  cropRect = (slot.state && slot.state.cropRect) ? { ...slot.state.cropRect } : null;
+  cropRotateDeg = (slot.state && slot.state.cropRotateDeg !== undefined) ? slot.state.cropRotateDeg : 0;
 
   // temporarily apply the slot's control state so drawEffects reads the
   // right values, without going through applyState's DOM side-effects/render
@@ -2829,6 +3236,8 @@ function renderSlotEditedCanvas(slot, maxDim) {
   fixedTimestamp = savedTimestamp;
   fixedExifData = savedExifData;
   leakSeed = savedLeakSeed;
+  cropRect = savedCropRect;
+  cropRotateDeg = savedCropRotateDeg;
 
   return offCanvas;
 }
@@ -2982,10 +3391,90 @@ const COLLAGE_LAYOUTS = {
 };
 
 function layoutsForCount(n) {
-  return Object.entries(COLLAGE_LAYOUTS).filter(
+  const builtin = Object.entries(COLLAGE_LAYOUTS).filter(
     ([, def]) => n >= def.minPhotos && n <= def.maxPhotos
   );
+  // Stage 2: also include user-built custom layouts whose cell count matches n
+  const custom = Object.entries(CUSTOM_LAYOUTS).filter(
+    ([, def]) => n >= def.minPhotos && n <= def.maxPhotos
+  );
+  return builtin.concat(custom);
 }
+
+// =============================================================
+// CUSTOM LAYOUT BUILDER (Stage 2)
+// Lets the user drag dividers in a rows×cols grid to set their own
+// proportions, save it as a named layout, and reuse it later. Custom
+// layouts live in localStorage (separate key from the layout *preset*
+// presets, which only remember which built-in layout + frame + gutter
+// combo is in use — they don't define new grids).
+// =============================================================
+
+const CUSTOM_LAYOUTS_KEY = 'y2kam_custom_collage_layouts';
+let CUSTOM_LAYOUTS = {};  // id -> { label, minPhotos, maxPhotos, aspect, cells(n), _entry }
+
+// Convert a stored custom-layout entry into the [x, y, w, h] cell array
+// the rest of the collage code expects. Cells are returned in row-major
+// order (left→right, top→bottom).
+function customLayoutCells(entry) {
+  const cells = [];
+  let y = 0;
+  for (let r = 0; r < entry.rows; r++) {
+    let x = 0;
+    for (let c = 0; c < entry.cols; c++) {
+      cells.push([x, y, entry.colWidths[c], entry.rowHeights[r]]);
+      x += entry.colWidths[c];
+    }
+    y += entry.rowHeights[r];
+  }
+  return cells;
+}
+
+function loadCustomLayouts() {
+  let list = [];
+  try {
+    list = JSON.parse(localStorage.getItem(CUSTOM_LAYOUTS_KEY) || '[]');
+    if (!Array.isArray(list)) list = [];
+  } catch (err) { list = []; }
+  CUSTOM_LAYOUTS = {};
+  list.forEach(entry => {
+    if (!entry || !entry.id || !entry.rows || !entry.cols) return;
+    const cellCount = entry.rows * entry.cols;
+    CUSTOM_LAYOUTS[entry.id] = {
+      label: entry.name || 'Custom',
+      minPhotos: cellCount,
+      maxPhotos: cellCount,
+      aspect: entry.cols / entry.rows,
+      cells(n) {
+        // For custom layouts, n always equals cellCount (minPhotos === maxPhotos).
+        // Slice defensively in case the caller passes a different n.
+        return customLayoutCells(entry).slice(0, Math.max(0, n));
+      },
+      _custom: true,
+      _entry: entry
+    };
+  });
+}
+
+function saveCustomLayoutsList(list) {
+  try {
+    localStorage.setItem(CUSTOM_LAYOUTS_KEY, JSON.stringify(list));
+  } catch (err) {
+    statusLeft.textContent = 'Could not save custom layout (storage full?)';
+  }
+}
+
+function deleteCustomLayout(id) {
+  let list = [];
+  try { list = JSON.parse(localStorage.getItem(CUSTOM_LAYOUTS_KEY) || '[]'); } catch (_) {}
+  list = list.filter(e => e.id !== id);
+  saveCustomLayoutsList(list);
+  loadCustomLayouts();
+}
+
+// Load on startup so any saved custom layouts appear in the layout grid
+// the first time the user opens the collage modal.
+loadCustomLayouts();
 
 // ---- Frame definitions ----
 // Each frame is a function(ctx, w, h, gutter, bgColor) that draws the
@@ -3197,6 +3686,12 @@ function defaultCollageState() {
 function renderCollageSlotList() {
   collageSlotListEl.innerHTML = '';
   collageSlots.forEach((slot, i) => {
+    // Stage 2: wrap each thumb in a column so we can fit a tiny caption
+    // input below it. The wrapper takes the slot's slot in the flex row;
+    // the thumb itself keeps its 56×74 dimensions.
+    const wrap = document.createElement('div');
+    wrap.className = 'collage-slot-wrap';
+
     const thumb = document.createElement('div');
     thumb.className = 'collage-slot-thumb';
 
@@ -3209,6 +3704,7 @@ function renderCollageSlotList() {
 
     thumb.addEventListener('click', (ev) => {
       if (ev.target.classList.contains('collage-slot-remove')) return;
+      if (ev.target.classList.contains('collage-slot-caption-input')) return;
       startEditingCollageSlot(i);
     });
 
@@ -3260,7 +3756,26 @@ function renderCollageSlotList() {
     thumb.appendChild(thumbCanvas);
     thumb.appendChild(remove);
     thumb.appendChild(reorder);
-    collageSlotListEl.appendChild(thumb);
+
+    // Stage 2: per-slot caption input (tiny text field under the thumb).
+    // Live-updates slot.captionText and re-renders the preview so the user
+    // sees the caption appear immediately on the collage.
+    const captionInput = document.createElement('input');
+    captionInput.type = 'text';
+    captionInput.className = 'win95-input collage-slot-caption-input';
+    captionInput.placeholder = 'caption…';
+    captionInput.maxLength = 40;
+    captionInput.value = slot.captionText || '';
+    captionInput.addEventListener('input', () => {
+      slot.captionText = captionInput.value;
+      updateCollagePreviewState();
+    });
+    // Stop clicks from triggering startEditingCollageSlot
+    captionInput.addEventListener('click', (ev) => ev.stopPropagation());
+
+    wrap.appendChild(thumb);
+    wrap.appendChild(captionInput);
+    collageSlotListEl.appendChild(wrap);
   });
 }
 
@@ -3518,6 +4033,53 @@ function renderCollageMoodRow() {
   });
 }
 
+// --- Apply current main-editor look to all collage slots ---
+// Stage 1 feature. One-tap shortcut: whatever the user has dialled in on
+// the single-photo editor right now gets merged into every populated slot,
+// just like moods do but using the live state instead of a curated preset.
+//
+// Stage 2 fix (HANDOVER-4 gap #3): cropRect/cropRotateDeg are deliberately
+// STRIPPED before merging — crop is per-photo, the recipient slot's own
+// crop (if any) must be preserved. Per-photo randoms (leakSeed,
+// fixedTimestamp, fixedExifData) are also stripped so each slot keeps
+// its own.
+const collageApplyLookBtn = document.getElementById('collageApplyLookBtn');
+if (collageApplyLookBtn) {
+  collageApplyLookBtn.addEventListener('click', () => {
+    if (!sourceImg || isPlaceholderImage) {
+      statusLeft.textContent = 'Open a photo first to set a look to copy';
+      return;
+    }
+    if (collageSlots.length === 0) {
+      statusLeft.textContent = 'Add photos to the collage first';
+      return;
+    }
+    const look = getState();
+    // Strip properties that should NOT bleed across photos:
+    //   - cropRect / cropRotateDeg: per-photo (Stage 2 fix for gap #3)
+    //   - leakSeed / fixedTimestamp / fixedExifData: per-photo randoms
+    //     (these aren't in getState() anyway, but defensive)
+    const { cropRect: _cr, cropRotateDeg: _crd, leakSeed: _ls,
+            fixedTimestamp: _ft, fixedExifData: _fe, ...lookMerge } = look;
+    collageSlots.forEach(slot => {
+      // Preserve the slot's own crop if it had one
+      const slotCropRect = slot.state && slot.state.cropRect ? slot.state.cropRect : null;
+      const slotCropRot  = slot.state && slot.state.cropRotateDeg !== undefined
+                            ? slot.state.cropRotateDeg : 0;
+      slot.state = { ...slot.state, ...lookMerge };
+      if (slotCropRect !== null) slot.state.cropRect = slotCropRect;
+      else delete slot.state.cropRect;
+      if (slotCropRot !== 0) slot.state.cropRotateDeg = slotCropRot;
+      else delete slot.state.cropRotateDeg;
+      slot.edited = true;
+      slot.editedCanvas = renderSlotEditedCanvas(slot, 200);
+    });
+    renderCollageSlotList();
+    updateCollagePreviewState();
+    statusLeft.textContent = 'Current look applied to all collage slots';
+  });
+}
+
 function applyCollageMood(moodId) {
   const mood = COLLAGE_MOODS[moodId];
   if (!mood || collageSlots.length === 0) return;
@@ -3677,7 +4239,9 @@ function renderCollageStickerPalette() {
         id: collageStickerIdCounter++,
         type,
         fx: 0.5 + (Math.random() * 0.2 - 0.1),
-        fy: 0.5 + (Math.random() * 0.2 - 0.1)
+        fy: 0.5 + (Math.random() * 0.2 - 0.1),
+        rot: 0,        // Stage 2: rotation degrees
+        scale: 1       // Stage 2: scale multiplier (0.3–3.5 clamped)
       });
       renderCollagePlacedStickers();
       updateCollagePreviewState();
@@ -3707,6 +4271,11 @@ function renderCollagePlacedStickers() {
     chip.style.top = `${st.fy * 100}%`;
     chip.style.color = def.color;
     chip.textContent = def.label;
+    // Stage 2: apply rotation + scale via CSS variables (composed with the
+    // existing translate(-50%, -50%) on the chip).
+    const rot = st.rot || 0;
+    const scale = st.scale != null ? st.scale : 1;
+    chip.style.transform = `translate(-50%, -50%) rotate(${rot}deg) scale(${scale})`;
 
     const del = document.createElement('div');
     del.className = 'collage-sticker-chip-remove';
@@ -3719,6 +4288,103 @@ function renderCollagePlacedStickers() {
     });
     chip.appendChild(del);
 
+    // --- Stage 2: rotate handle (top-right of chip) ---
+    // Drag around the chip's center; the angle from center → pointer
+    // becomes the new rotation. Pointer offset is recorded at drag start
+    // so we add to the existing rotation rather than resetting it.
+    const rotHandle = document.createElement('div');
+    rotHandle.className = 'collage-sticker-chip-handle collage-sticker-chip-rotate';
+    rotHandle.textContent = '⟳';
+    rotHandle.title = 'Drag to rotate';
+    let rotDragging = false;
+    let rotStartAngle = 0;
+    let rotStartRot = 0;
+    const onRotMove = (clientX, clientY) => {
+      const rect = chip.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      const ang = Math.atan2(clientY - cy, clientX - cx) * 180 / Math.PI;
+      // ang is in degrees, 0 = pointing right, increases clockwise (because
+      // y axis is flipped in screen space). Subtract start offset so the
+      // sticker doesn't snap to the pointer's angle on first move.
+      let newRot = rotStartRot + (ang - rotStartAngle);
+      // Normalise to -180..180 for sanity
+      while (newRot > 180) newRot -= 360;
+      while (newRot < -180) newRot += 360;
+      st.rot = Math.round(newRot);
+      chip.style.transform = `translate(-50%, -50%) rotate(${st.rot}deg) scale(${st.scale != null ? st.scale : 1})`;
+    };
+    rotHandle.addEventListener('pointerdown', (ev) => {
+      ev.stopPropagation();
+      rotDragging = true;
+      rotHandle.setPointerCapture(ev.pointerId);
+      const rect = chip.getBoundingClientRect();
+      rotStartAngle = Math.atan2(
+        ev.clientY - (rect.top + rect.height / 2),
+        ev.clientX - (rect.left + rect.width / 2)
+      ) * 180 / Math.PI;
+      rotStartRot = st.rot || 0;
+    });
+    rotHandle.addEventListener('pointermove', (ev) => {
+      if (!rotDragging) return;
+      onRotMove(ev.clientX, ev.clientY);
+    });
+    const endRot = () => {
+      if (!rotDragging) return;
+      rotDragging = false;
+      updateCollagePreviewState();
+    };
+    rotHandle.addEventListener('pointerup', endRot);
+    rotHandle.addEventListener('pointercancel', endRot);
+    chip.appendChild(rotHandle);
+
+    // --- Stage 2: scale handle (bottom-right of chip) ---
+    // Drag diagonally outward to grow, inward to shrink. We compare the
+    // distance from chip center → pointer against the start distance and
+    // multiply the start scale by that ratio.
+    const scaleHandle = document.createElement('div');
+    scaleHandle.className = 'collage-sticker-chip-handle collage-sticker-chip-scale';
+    scaleHandle.textContent = '⤢';
+    scaleHandle.title = 'Drag to resize';
+    let scaleDragging = false;
+    let scaleStartDist = 0;
+    let scaleStartScale = 1;
+    const onScaleMove = (clientX, clientY) => {
+      const rect = chip.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      const dist = Math.hypot(clientX - cx, clientY - cy);
+      if (scaleStartDist < 1) return;
+      const ratio = dist / scaleStartDist;
+      let newScale = scaleStartScale * ratio;
+      newScale = Math.max(0.3, Math.min(3.5, newScale));
+      st.scale = newScale;
+      chip.style.transform = `translate(-50%, -50%) rotate(${st.rot || 0}deg) scale(${st.scale})`;
+    };
+    scaleHandle.addEventListener('pointerdown', (ev) => {
+      ev.stopPropagation();
+      scaleDragging = true;
+      scaleHandle.setPointerCapture(ev.pointerId);
+      const rect = chip.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      scaleStartDist = Math.hypot(ev.clientX - cx, ev.clientY - cy) || 1;
+      scaleStartScale = st.scale != null ? st.scale : 1;
+    });
+    scaleHandle.addEventListener('pointermove', (ev) => {
+      if (!scaleDragging) return;
+      onScaleMove(ev.clientX, ev.clientY);
+    });
+    const endScale = () => {
+      if (!scaleDragging) return;
+      scaleDragging = false;
+      updateCollagePreviewState();
+    };
+    scaleHandle.addEventListener('pointerup', endScale);
+    scaleHandle.addEventListener('pointercancel', endScale);
+    chip.appendChild(scaleHandle);
+
+    // --- existing drag-to-move (body of the chip) ---
     let dragging = false;
     const onMove = (clientX, clientY) => {
       const rect = collagePlacedLayer.getBoundingClientRect();
@@ -3728,6 +4394,9 @@ function renderCollagePlacedStickers() {
       chip.style.top = `${st.fy * 100}%`;
     };
     chip.addEventListener('pointerdown', (ev) => {
+      // Don't start a move drag if the user grabbed a handle.
+      if (ev.target.classList.contains('collage-sticker-chip-handle')) return;
+      if (ev.target.classList.contains('collage-sticker-chip-remove')) return;
       dragging = true;
       chip.setPointerCapture(ev.pointerId);
     });
@@ -3750,18 +4419,27 @@ function drawCollageStickers(ctx, w, h) {
     const def = COLLAGE_STICKERS[st.type];
     if (!def) return;
     const size = Math.round(h * 0.09);
+    const rot = (st.rot || 0) * Math.PI / 180;
+    const scale = st.scale != null ? st.scale : 1;
+    ctx.save();
+    ctx.translate(st.fx * w, st.fy * h);
+    if (rot) ctx.rotate(rot);
+    if (scale !== 1) ctx.scale(scale, scale);
     ctx.font = `${size}px sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillStyle = def.color;
-    ctx.fillText(def.label, st.fx * w, st.fy * h);
+    ctx.fillText(def.label, 0, 0);
+    ctx.restore();
   });
 }
 
 function renderCollage(targetCanvas, outW) {
   const n = collageSlots.length;
   if (n < 2) return;
-  const layout = COLLAGE_LAYOUTS[collageLayoutId];
+  // Stage 2: look in CUSTOM_LAYOUTS too if the id isn't a built-in.
+  const layout = COLLAGE_LAYOUTS[collageLayoutId] || CUSTOM_LAYOUTS[collageLayoutId];
+  if (!layout) return;
   const frame = COLLAGE_FRAMES[collageFrameId];
   const gutter = parseInt(collageGutterEl.value, 10);
   const bgColor = collageBgColorEl.value;
@@ -3834,6 +4512,48 @@ function renderCollage(targetCanvas, outW) {
     ctx.rect(gx, gy, gw, gh);
     ctx.clip();
     coverDrawImage(ctx, editedImg, gx, gy, gw, gh);
+
+    // Stage 2: per-slot caption — a small strip at the bottom of the cell
+    // with the caption text overlaid on a semi-transparent dark band.
+    // Drawn inside the clip so a long caption gets cut off at the cell edge
+    // instead of bleeding into neighbouring cells.
+    const slotCaption = (slot.captionText || '').trim();
+    if (slotCaption) {
+      const captionH = Math.max(14, Math.round(gh * 0.13));
+      const captionY = gy + gh - captionH;
+      // subtle dark gradient so the caption is readable regardless of the
+      // image's underlying brightness in that region
+      const grad = ctx.createLinearGradient(0, captionY, 0, captionY + captionH);
+      grad.addColorStop(0, 'rgba(0,0,0,0)');
+      grad.addColorStop(1, 'rgba(0,0,0,0.65)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(gx, captionY, gw, captionH);
+      // text
+      const fontSize = Math.max(10, Math.round(captionH * 0.62));
+      ctx.font = `${fontSize}px 'Courier New', monospace`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#ffffff';
+      // shrink-to-fit: if the measured text is wider than the cell, drop the
+      // font size proportionally so it still fits.
+      const maxW = gw - 8;
+      let measured = ctx.measureText(slotCaption).width;
+      if (measured > maxW) {
+        const shrink = maxW / measured;
+        ctx.font = `${Math.max(8, Math.round(fontSize * shrink))}px 'Courier New', monospace`;
+        measured = ctx.measureText(slotCaption).width;
+      }
+      // If still too wide even after shrinking, hard-truncate with an ellipsis.
+      let display = slotCaption;
+      if (measured > maxW) {
+        for (let cut = slotCaption.length - 1; cut > 0; cut--) {
+          display = slotCaption.slice(0, cut) + '…';
+          if (ctx.measureText(display).width <= maxW) break;
+        }
+      }
+      ctx.fillText(display, gx + gw / 2, captionY + captionH / 2);
+    }
+
     ctx.restore();
 
     if (frame.perCellAfter) {
@@ -3863,3 +4583,344 @@ collageDownloadBtn.addEventListener('click', () => {
   link.href = dataUrl;
   link.click();
 });
+
+// =============================================================
+// CUSTOM LAYOUT BUILDER — modal + drag dividers + save (Stage 2.1)
+// =============================================================
+//
+// UX flow:
+//   1. User taps "Build Custom Layout…" inside the Collage modal.
+//   2. The builder modal opens with a default 2×2 grid (equal cells).
+//   3. +/- buttons change the row and column count (1–4 each).
+//   4. The user drags the horizontal / vertical divider handles inside
+//      the preview to set row heights / column widths as fractions 0–1.
+//      All cells in the same row share the same height fraction; all
+//      cells in the same column share the same width fraction.
+//   5. "Save" prompts for a name, writes the layout to localStorage
+//      under CUSTOM_LAYOUTS_KEY, refreshes CUSTOM_LAYOUTS, closes the
+//      builder, and auto-selects the new layout in the collage modal.
+//   6. Custom layouts show up in the layout grid alongside the built-ins
+//      (with a small "×" badge to delete them).
+
+const layoutBuilderOverlay = document.getElementById('layoutBuilderOverlay');
+const layoutBuilderOpenBtn = document.getElementById('layoutBuilderOpenBtn');
+const layoutBuilderCloseX  = document.getElementById('layoutBuilderCloseX');
+const layoutBuilderPreview = document.getElementById('layoutBuilderPreview');
+const layoutBuilderRowsDec = document.getElementById('layoutBuilderRowsDec');
+const layoutBuilderRowsInc = document.getElementById('layoutBuilderRowsInc');
+const layoutBuilderColsDec = document.getElementById('layoutBuilderColsDec');
+const layoutBuilderColsInc = document.getElementById('layoutBuilderColsInc');
+const layoutBuilderRowsVal = document.getElementById('layoutBuilderRowsVal');
+const layoutBuilderColsVal = document.getElementById('layoutBuilderColsVal');
+const layoutBuilderSaveBtn = document.getElementById('layoutBuilderSaveBtn');
+const layoutBuilderResetBtn = document.getElementById('layoutBuilderResetBtn');
+
+// Working state for the builder. rowHeights / colWidths are arrays of
+// fractions that always sum to ~1 (we re-normalise after each drag).
+let _builderRows = 2;
+let _builderCols = 2;
+let _builderRowHeights = [0.5, 0.5];
+let _builderColWidths  = [0.5, 0.5];
+
+function _builderEqualArray(n) {
+  const a = [];
+  for (let i = 0; i < n; i++) a.push(1 / n);
+  return a;
+}
+
+function _builderClampDims() {
+  _builderRows = Math.max(1, Math.min(4, _builderRows));
+  _builderCols = Math.max(1, Math.min(4, _builderCols));
+}
+
+// Re-size the rowHeights / colWidths arrays to match _builderRows / _builderCols,
+// preserving existing proportions where possible and re-normalising to sum=1.
+function _builderResizeArrays() {
+  // rows
+  if (_builderRowHeights.length !== _builderRows) {
+    const newRowHeights = [];
+    for (let r = 0; r < _builderRows; r++) {
+      // preserve existing value or default to equal share
+      const prev = _builderRowHeights[r];
+      if (prev != null && prev > 0) newRowHeights.push(prev);
+      else newRowHeights.push(1 / _builderRows);
+    }
+    _builderRowHeights = _normaliseFractions(newRowHeights);
+  }
+  if (_builderColWidths.length !== _builderCols) {
+    const newColWidths = [];
+    for (let c = 0; c < _builderCols; c++) {
+      const prev = _builderColWidths[c];
+      if (prev != null && prev > 0) newColWidths.push(prev);
+      else newColWidths.push(1 / _builderCols);
+    }
+    _builderColWidths = _normaliseFractions(newColWidths);
+  }
+}
+
+function _normaliseFractions(arr) {
+  const sum = arr.reduce((s, v) => s + Math.max(0, v), 0);
+  if (sum <= 0) return _builderEqualArray(arr.length);
+  return arr.map(v => Math.max(0.05, v / sum));
+}
+
+function openLayoutBuilder() {
+  // Reset to a sensible default each open so the user starts fresh.
+  _builderRows = 2;
+  _builderCols = 2;
+  _builderRowHeights = _builderEqualArray(2);
+  _builderColWidths  = _builderEqualArray(2);
+  _builderClampDims();
+  _builderResizeArrays();
+  _builderUpdateCounters();
+  renderBuilderPreview();
+  if (layoutBuilderOverlay) layoutBuilderOverlay.classList.add('open');
+}
+
+function closeLayoutBuilder() {
+  if (layoutBuilderOverlay) layoutBuilderOverlay.classList.remove('open');
+}
+
+function _builderUpdateCounters() {
+  if (layoutBuilderRowsVal) layoutBuilderRowsVal.textContent = _builderRows;
+  if (layoutBuilderColsVal) layoutBuilderColsVal.textContent = _builderCols;
+}
+
+// Draws the grid preview as absolutely-positioned cells inside an
+// aspect-matched box, plus draggable divider handles between rows and
+// between columns.
+function renderBuilderPreview() {
+  if (!layoutBuilderPreview) return;
+  layoutBuilderPreview.innerHTML = '';
+
+  // Set the preview box aspect ratio to match the resulting layout.
+  const aspect = _builderCols / _builderRows;
+  layoutBuilderPreview.style.aspectRatio = String(aspect);
+
+  // Cells
+  let y = 0;
+  for (let r = 0; r < _builderRows; r++) {
+    let x = 0;
+    for (let c = 0; c < _builderCols; c++) {
+      const cell = document.createElement('div');
+      cell.className = 'layout-builder-cell';
+      cell.style.left   = (x * 100) + '%';
+      cell.style.top    = (y * 100) + '%';
+      cell.style.width  = (_builderColWidths[c] * 100) + '%';
+      cell.style.height = (_builderRowHeights[r] * 100) + '%';
+      const cellIdx = r * _builderCols + c + 1;
+      cell.textContent = String(cellIdx);
+      layoutBuilderPreview.appendChild(cell);
+      x += _builderColWidths[c];
+    }
+    y += _builderRowHeights[r];
+  }
+
+  // Row dividers (horizontal lines between rows). r = 0..rows-2
+  for (let r = 0; r < _builderRows - 1; r++) {
+    let cumY = 0;
+    for (let k = 0; k <= r; k++) cumY += _builderRowHeights[k];
+    const handle = document.createElement('div');
+    handle.className = 'layout-builder-divider layout-builder-divider-h';
+    handle.style.top = (cumY * 100) + '%';
+    handle.dataset.axis = 'row';
+    handle.dataset.index = String(r);
+    layoutBuilderPreview.appendChild(handle);
+    _attachDividerDrag(handle, 'row', r);
+  }
+  // Column dividers (vertical lines between cols). c = 0..cols-2
+  for (let c = 0; c < _builderCols - 1; c++) {
+    let cumX = 0;
+    for (let k = 0; k <= c; k++) cumX += _builderColWidths[k];
+    const handle = document.createElement('div');
+    handle.className = 'layout-builder-divider layout-builder-divider-v';
+    handle.style.left = (cumX * 100) + '%';
+    handle.dataset.axis = 'col';
+    handle.dataset.index = String(c);
+    layoutBuilderPreview.appendChild(handle);
+    _attachDividerDrag(handle, 'col', c);
+  }
+}
+
+function _attachDividerDrag(handle, axis, index) {
+  let dragging = false;
+  let pointerId = null;
+  let startClient = 0;
+  let startFracs = [];
+
+  const onMove = (clientX, clientY) => {
+    const rect = layoutBuilderPreview.getBoundingClientRect();
+    if (axis === 'col') {
+      let frac = (clientX - rect.left) / rect.width;
+      frac = Math.max(0.05, Math.min(0.95, frac));
+      // The dragged divider sits between col `index` and col `index+1`.
+      // The cumulative fraction up to and including col `index` is `frac`,
+      // so we redistribute the remaining (1 - frac) across the remaining
+      // columns proportionally to their current ratios.
+      const remaining = 1 - frac;
+      const afterCount = _builderCols - (index + 1);
+      const oldAfterSum = _builderColWidths.slice(index + 1).reduce((s, v) => s + v, 0) || 1;
+      const newColWidths = _builderColWidths.slice();
+      newColWidths[index] = frac;
+      // first, scale all "after" cols to fit `remaining`
+      let afterSum = 0;
+      for (let k = index + 1; k < _builderCols; k++) {
+        const ratio = _builderColWidths[k] / oldAfterSum;
+        const v = (afterCount === 1) ? remaining : ratio * remaining;
+        newColWidths[k] = v;
+        afterSum += v;
+      }
+      // fix rounding drift on the last col
+      if (afterCount >= 1) newColWidths[_builderCols - 1] += (remaining - afterSum);
+      _builderColWidths = _normaliseFractions(newColWidths);
+    } else {
+      // row
+      let frac = (clientY - rect.top) / rect.height;
+      frac = Math.max(0.05, Math.min(0.95, frac));
+      const remaining = 1 - frac;
+      const afterCount = _builderRows - (index + 1);
+      const oldAfterSum = _builderRowHeights.slice(index + 1).reduce((s, v) => s + v, 0) || 1;
+      const newRowHeights = _builderRowHeights.slice();
+      newRowHeights[index] = frac;
+      let afterSum = 0;
+      for (let k = index + 1; k < _builderRows; k++) {
+        const ratio = _builderRowHeights[k] / oldAfterSum;
+        const v = (afterCount === 1) ? remaining : ratio * remaining;
+        newRowHeights[k] = v;
+        afterSum += v;
+      }
+      if (afterCount >= 1) newRowHeights[_builderRows - 1] += (remaining - afterSum);
+      _builderRowHeights = _normaliseFractions(newRowHeights);
+    }
+    renderBuilderPreview();
+  };
+
+  handle.addEventListener('pointerdown', (e) => {
+    e.stopPropagation();
+    dragging = true;
+    pointerId = e.pointerId;
+    handle.setPointerCapture(e.pointerId);
+    startClient = axis === 'col' ? e.clientX : e.clientY;
+    startFracs = axis === 'col' ? _builderColWidths.slice() : _builderRowHeights.slice();
+  });
+  handle.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    if (axis === 'col') onMove(e.clientX, e.clientY);
+    else                onMove(e.clientX, e.clientY);
+  });
+  const end = (e) => {
+    if (!dragging) return;
+    dragging = false;
+    if (pointerId !== null) {
+      try { handle.releasePointerCapture(pointerId); } catch (_) {}
+    }
+    pointerId = null;
+  };
+  handle.addEventListener('pointerup', end);
+  handle.addEventListener('pointercancel', end);
+}
+
+if (layoutBuilderOpenBtn) {
+  layoutBuilderOpenBtn.addEventListener('click', openLayoutBuilder);
+}
+if (layoutBuilderCloseX) {
+  layoutBuilderCloseX.addEventListener('click', closeLayoutBuilder);
+}
+if (layoutBuilderOverlay) {
+  layoutBuilderOverlay.addEventListener('click', (e) => {
+    if (e.target === layoutBuilderOverlay) closeLayoutBuilder();
+  });
+}
+
+if (layoutBuilderRowsDec) {
+  layoutBuilderRowsDec.addEventListener('click', () => {
+    if (_builderRows <= 1) return;
+    _builderRows--;
+    _builderClampDims();
+    _builderResizeArrays();
+    _builderUpdateCounters();
+    renderBuilderPreview();
+  });
+}
+if (layoutBuilderRowsInc) {
+  layoutBuilderRowsInc.addEventListener('click', () => {
+    if (_builderRows >= 4) return;
+    _builderRows++;
+    _builderClampDims();
+    _builderResizeArrays();
+    _builderUpdateCounters();
+    renderBuilderPreview();
+  });
+}
+if (layoutBuilderColsDec) {
+  layoutBuilderColsDec.addEventListener('click', () => {
+    if (_builderCols <= 1) return;
+    _builderCols--;
+    _builderClampDims();
+    _builderResizeArrays();
+    _builderUpdateCounters();
+    renderBuilderPreview();
+  });
+}
+if (layoutBuilderColsInc) {
+  layoutBuilderColsInc.addEventListener('click', () => {
+    if (_builderCols >= 4) return;
+    _builderCols++;
+    _builderClampDims();
+    _builderResizeArrays();
+    _builderUpdateCounters();
+    renderBuilderPreview();
+  });
+}
+
+if (layoutBuilderResetBtn) {
+  layoutBuilderResetBtn.addEventListener('click', () => {
+    _builderRowHeights = _builderEqualArray(_builderRows);
+    _builderColWidths  = _builderEqualArray(_builderCols);
+    renderBuilderPreview();
+  });
+}
+
+if (layoutBuilderSaveBtn) {
+  layoutBuilderSaveBtn.addEventListener('click', () => {
+    const defaultName = `Custom ${_builderRows}×${_builderCols}`;
+    const name = (prompt('Name this layout:', defaultName) || '').trim().slice(0, 24) || defaultName;
+    const id = 'custom_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
+    const entry = {
+      id, name,
+      rows: _builderRows,
+      cols: _builderCols,
+      rowHeights: _builderRowHeights.slice(),
+      colWidths:  _builderColWidths.slice()
+    };
+    let list = [];
+    try { list = JSON.parse(localStorage.getItem(CUSTOM_LAYOUTS_KEY) || '[]'); } catch (_) {}
+    if (!Array.isArray(list)) list = [];
+    list.push(entry);
+    saveCustomLayoutsList(list);
+    loadCustomLayouts();
+    // Auto-select the new layout in the collage modal and refresh grids.
+    collageLayoutId = id;
+    renderCollageOptionGrids();
+    updateCollagePreviewState();
+    closeLayoutBuilder();
+    statusLeft.textContent = `Saved custom layout "${name}" — selected`;
+  });
+}
+
+// Re-render the builder preview on window resize so divider positions stay
+// aligned with the preview's actual pixel dimensions.
+window.addEventListener('resize', () => {
+  if (layoutBuilderOverlay && layoutBuilderOverlay.classList.contains('open')) {
+    renderBuilderPreview();
+  }
+});
+
+// When the collage modal is opened, refresh the layout grid so any custom
+// layouts added since the last open show up. The existing
+// `collageOpenBtn.addEventListener('click', ...)` already calls
+// renderCollageOptionGrids(); we just hook in an extra refresh for safety
+// in case the user added a custom layout without re-opening the modal.
+const _origCollageOpenHandler = collageOpenBtn.onclick;
+// (No-op: renderCollageOptionGrids already runs on open via the existing
+// listener. Kept here as a marker for future maintainers.)
