@@ -693,8 +693,7 @@ function randomExifData() {
 let fixedExifData = randomExifData();
 
 
-fileInput.addEventListener('change', (e) => {
-  const file = e.target.files && e.target.files[0];
+function loadImageFile(file, sourceLabel) {
   if (!file) {
     statusLeft.textContent = 'No file selected';
     return;
@@ -726,7 +725,7 @@ fileInput.addEventListener('change', (e) => {
       randomizeLeakSeed();
       render();
       generateLutThumbnails();
-      statusLeft.textContent = file.name;
+      statusLeft.textContent = sourceLabel || file.name;
       // fresh photo = fresh undo history, so old edits don't bleed across images
       historyStack.length = 0;
       historyIndex = -1;
@@ -737,6 +736,22 @@ fileInput.addEventListener('change', (e) => {
   };
 
   reader.readAsDataURL(file);
+}
+
+fileInput.addEventListener('change', (e) => {
+  const file = e.target.files && e.target.files[0];
+  loadImageFile(file);
+});
+
+const cameraInput = document.getElementById('cameraInput');
+const takePhotoBtn = document.getElementById('takePhotoBtn');
+takePhotoBtn.addEventListener('click', () => {
+  cameraInput.value = '';
+  cameraInput.click();
+});
+cameraInput.addEventListener('change', (e) => {
+  const file = e.target.files && e.target.files[0];
+  loadImageFile(file, 'Captured photo');
 });
 
 // Drag & drop support (desktop)
@@ -2349,3 +2364,735 @@ render = function() {
 };
 
 syncLabels();
+
+// --- Pinch-to-zoom on the canvas preview ---
+// Purely a view-level zoom (CSS transform on zoomTarget) so pinching stays
+// smooth — it never re-renders the actual image at a different resolution.
+const zoomTarget = document.getElementById('zoomTarget');
+let zoomScale = 1;
+let zoomPanX = 0;
+let zoomPanY = 0;
+const ZOOM_MIN = 1;
+const ZOOM_MAX = 4;
+
+function applyZoomTransform() {
+  zoomTarget.style.transform = `translate(${zoomPanX}px, ${zoomPanY}px) scale(${zoomScale})`;
+}
+
+function clampPan() {
+  // keep panning bounded roughly to how far the zoomed image can drift
+  // before its edge would show empty space in the wrap
+  const maxPan = (zoomScale - 1) * 140;
+  zoomPanX = Math.max(-maxPan, Math.min(maxPan, zoomPanX));
+  zoomPanY = Math.max(-maxPan, Math.min(maxPan, zoomPanY));
+}
+
+function resetZoom() {
+  zoomScale = 1;
+  zoomPanX = 0;
+  zoomPanY = 0;
+  applyZoomTransform();
+}
+
+let pinchStartDist = 0;
+let pinchStartScale = 1;
+let panStartX = 0, panStartY = 0;
+let panPointerStartX = 0, panPointerStartY = 0;
+let isPanning = false;
+
+function touchDist(touches) {
+  const dx = touches[0].clientX - touches[1].clientX;
+  const dy = touches[0].clientY - touches[1].clientY;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+canvasWrap.addEventListener('touchstart', (e) => {
+  if (compareDragging) return; // don't fight the compare-slider drag
+  if (e.touches.length === 2) {
+    pinchStartDist = touchDist(e.touches);
+    pinchStartScale = zoomScale;
+    isPanning = false;
+  } else if (e.touches.length === 1 && zoomScale > 1) {
+    isPanning = true;
+    panPointerStartX = e.touches[0].clientX;
+    panPointerStartY = e.touches[0].clientY;
+    panStartX = zoomPanX;
+    panStartY = zoomPanY;
+  }
+}, { passive: true });
+
+canvasWrap.addEventListener('touchmove', (e) => {
+  if (compareDragging) return;
+  if (e.touches.length === 2) {
+    e.preventDefault();
+    const dist = touchDist(e.touches);
+    const rawScale = pinchStartScale * (dist / pinchStartDist);
+    zoomScale = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, rawScale));
+    clampPan();
+    applyZoomTransform();
+  } else if (e.touches.length === 1 && isPanning) {
+    e.preventDefault();
+    zoomPanX = panStartX + (e.touches[0].clientX - panPointerStartX);
+    zoomPanY = panStartY + (e.touches[0].clientY - panPointerStartY);
+    clampPan();
+    applyZoomTransform();
+  }
+}, { passive: false });
+
+canvasWrap.addEventListener('touchend', (e) => {
+  if (e.touches.length < 2) pinchStartDist = 0;
+  if (e.touches.length === 0) {
+    isPanning = false;
+    // snap fully back to 1x if the pinch ends barely zoomed in, so it
+    // doesn't get stuck at an awkward near-1x scale
+    if (zoomScale < 1.05) resetZoom();
+  }
+});
+
+// Double-tap to reset zoom — handy since there's no visible zoom-out control
+let lastTapTime = 0;
+canvasWrap.addEventListener('touchend', (e) => {
+  if (e.touches.length > 0) return;
+  const now = Date.now();
+  if (now - lastTapTime < 300 && zoomScale > 1) {
+    resetZoom();
+  }
+  lastTapTime = now;
+});
+
+// Reset zoom whenever a new photo loads, so it doesn't carry over confusingly
+const originalLoadImageFile = loadImageFile;
+loadImageFile = function(file, sourceLabel) {
+  resetZoom();
+  originalLoadImageFile(file, sourceLabel);
+};
+
+// --- Batch Export ---
+// Applies the CURRENT settings (LUT, filters, overlay, frame, stamps, etc.)
+// to a list of selected photos, exporting each as its own JPEG download.
+// sourceImg is swapped one at a time so this reuses the exact same
+// drawEffects() pipeline as the live single-photo preview — no logic duplication.
+let batchFiles = [];
+
+const batchFileInput = document.getElementById('batchFileInput');
+const batchSelectBtn = document.getElementById('batchSelectBtn');
+const batchFileListEl = document.getElementById('batchFileList');
+const batchProcessBtn = document.getElementById('batchProcessBtn');
+const batchProgressRow = document.getElementById('batchProgressRow');
+const batchProgressText = document.getElementById('batchProgressText');
+
+batchSelectBtn.addEventListener('click', () => {
+  batchFileInput.value = '';
+  batchFileInput.click();
+});
+
+batchFileInput.addEventListener('change', (e) => {
+  batchFiles = Array.from(e.target.files || []);
+  renderBatchFileList();
+  batchProcessBtn.disabled = batchFiles.length === 0;
+});
+
+function renderBatchFileList() {
+  batchFileListEl.innerHTML = '';
+  if (batchFiles.length === 0) return;
+  batchFiles.forEach((file, i) => {
+    const row = document.createElement('div');
+    row.className = 'batch-file-row';
+    const name = document.createElement('span');
+    name.className = 'batch-file-name';
+    name.textContent = file.name;
+    const status = document.createElement('span');
+    status.className = 'batch-file-status';
+    status.id = `batchStatus${i}`;
+    status.textContent = 'queued';
+    row.appendChild(name);
+    row.appendChild(status);
+    batchFileListEl.appendChild(row);
+  });
+}
+
+function loadImageFromFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('read error'));
+    reader.onload = (ev) => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('invalid image'));
+      img.onload = () => resolve(img);
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+async function processBatch() {
+  if (batchFiles.length === 0 || !sourceImg) return;
+  batchProcessBtn.disabled = true;
+  batchSelectBtn.disabled = true;
+  batchProgressRow.style.display = 'flex';
+
+  // stash the live photo's state so we can restore it once batch finishes —
+  // batch export must not disturb what the user is currently looking at
+  const savedSourceImg = sourceImg;
+  const savedTimestamp = fixedTimestamp;
+  const savedExifData = fixedExifData;
+  const savedLeakSeed = { ...leakSeed };
+
+  const quality = parseInt(qualityEl.value, 10) / 100;
+  const exportMaxDim = 1600;
+  let successCount = 0;
+
+  for (let i = 0; i < batchFiles.length; i++) {
+    const file = batchFiles[i];
+    const statusEl = document.getElementById(`batchStatus${i}`);
+    batchProgressText.textContent = `Processing ${i + 1} of ${batchFiles.length}...`;
+    if (statusEl) { statusEl.textContent = 'working...'; statusEl.className = 'batch-file-status'; }
+
+    try {
+      const img = await loadImageFromFile(file);
+      // swap in this photo's own random per-photo state, matching how a
+      // normal single upload would look — not the currently-loaded photo's state
+      sourceImg = img;
+      fixedTimestamp = randomTimestamp();
+      fixedExifData = randomExifData();
+      randomizeLeakSeed();
+
+      let w = img.naturalWidth, h = img.naturalHeight;
+      const scale = Math.min(1, exportMaxDim / Math.max(w, h));
+      w = Math.round(w * scale);
+      h = Math.round(h * scale);
+
+      const exportCanvas = document.createElement('canvas');
+      drawEffects(exportCanvas, w, h);
+      const dataUrl = exportCanvas.toDataURL('image/jpeg', quality);
+
+      const baseName = file.name.replace(/\.[^.]+$/, '');
+      const link = document.createElement('a');
+      link.download = `y2kam-${baseName}.jpg`;
+      link.href = dataUrl;
+      link.click();
+
+      if (statusEl) { statusEl.textContent = 'done'; statusEl.className = 'batch-file-status done'; }
+      successCount++;
+    } catch (err) {
+      if (statusEl) { statusEl.textContent = 'error'; statusEl.className = 'batch-file-status error'; }
+    }
+
+    // small gap between triggered downloads — back-to-back downloads can get
+    // silently blocked by the browser's popup/download rate limiting
+    await new Promise(r => setTimeout(r, 400));
+  }
+
+  // restore the live photo exactly as it was before batch ran
+  sourceImg = savedSourceImg;
+  fixedTimestamp = savedTimestamp;
+  fixedExifData = savedExifData;
+  leakSeed = savedLeakSeed;
+  render();
+
+  batchProgressText.textContent = `Done — ${successCount} of ${batchFiles.length} exported`;
+  batchProcessBtn.disabled = false;
+  batchSelectBtn.disabled = false;
+}
+
+batchProcessBtn.addEventListener('click', processBatch);
+
+// --- Collage Maker (Stage 1) ---
+// A separate mode from single-photo editing: takes 2-6 raw photos, arranges
+// them into one canvas using a chosen layout, then draws a collage-level
+// frame around the whole thing. Deliberately does NOT touch drawEffects()
+// or per-photo state yet — that's Stage 2. Frame drawing is fully separate
+// from the single-photo borderSelect logic by design.
+
+let collageSlots = []; // { file, img }
+let collageLayoutId = 'grid2x2';
+let collageFrameId = 'thickWhite';
+
+const collageOverlay = document.getElementById('collageOverlay');
+const collageOpenBtn = document.getElementById('collageOpenBtn');
+const collageCloseX = document.getElementById('collageCloseX');
+const collageSelectBtn = document.getElementById('collageSelectBtn');
+const collageFileInput = document.getElementById('collageFileInput');
+const collageSlotListEl = document.getElementById('collageSlotList');
+const collageLayoutGrid = document.getElementById('collageLayoutGrid');
+const collageFrameGrid = document.getElementById('collageFrameGrid');
+const collageGutterEl = document.getElementById('collageGutter');
+const collageGutterVal = document.getElementById('collageGutterVal');
+const collageBgColorEl = document.getElementById('collageBgColor');
+const collagePreviewCanvas = document.getElementById('collagePreviewCanvas');
+const collagePreviewEmpty = document.getElementById('collagePreviewEmpty');
+const collageGenerateBtn = document.getElementById('collageGenerateBtn');
+const collageDownloadBtn = document.getElementById('collageDownloadBtn');
+
+// ---- Layout definitions ----
+// Each layout returns an array of cell rects { x, y, w, h } as FRACTIONS of
+// the total canvas (0-1), given a photo count. minPhotos/maxPhotos gate
+// which layouts are offered for the current slot count.
+const COLLAGE_LAYOUTS = {
+  grid2x2: {
+    label: 'Grid 2×2',
+    minPhotos: 2, maxPhotos: 4,
+    aspect: 1,
+    cells(n) {
+      const positions = [
+        [0, 0, 0.5, 0.5], [0.5, 0, 0.5, 0.5],
+        [0, 0.5, 0.5, 0.5], [0.5, 0.5, 0.5, 0.5]
+      ];
+      return positions.slice(0, n);
+    }
+  },
+  grid3x3: {
+    label: 'Grid 3×3',
+    minPhotos: 5, maxPhotos: 6,
+    aspect: 1,
+    cells(n) {
+      // 6 slots: use a 3x2 grid (3 across, 2 down) which reads better than
+      // a sparse 3x3 for up to 6 photos
+      const cols = 3, rows = 2;
+      const cells = [];
+      for (let i = 0; i < n; i++) {
+        const c = i % cols, r = Math.floor(i / cols);
+        cells.push([c / cols, r / rows, 1 / cols, 1 / rows]);
+      }
+      return cells;
+    }
+  },
+  vStrip: {
+    label: 'Vertical Strip',
+    minPhotos: 2, maxPhotos: 6,
+    aspect: 0.6,
+    cells(n) {
+      const cells = [];
+      for (let i = 0; i < n; i++) cells.push([0, i / n, 1, 1 / n]);
+      return cells;
+    }
+  },
+  hStrip: {
+    label: 'Horizontal Strip',
+    minPhotos: 2, maxPhotos: 6,
+    aspect: 1.8,
+    cells(n) {
+      const cells = [];
+      for (let i = 0; i < n; i++) cells.push([i / n, 0, 1 / n, 1]);
+      return cells;
+    }
+  },
+  bigTwoSmall: {
+    label: 'Big + Small',
+    minPhotos: 3, maxPhotos: 3,
+    aspect: 1,
+    cells() {
+      return [
+        [0, 0, 0.62, 1],
+        [0.62, 0, 0.38, 0.5],
+        [0.62, 0.5, 0.38, 0.5]
+      ];
+    }
+  },
+  scattered: {
+    label: 'Scattered',
+    minPhotos: 2, maxPhotos: 6,
+    aspect: 1,
+    // Scattered layout overlaps cells and adds rotation — handled specially
+    // in renderCollage() rather than a plain grid, but we still provide
+    // base rects (roughly centered, overlapping) for consistent framing math.
+    cells(n) {
+      const base = [
+        [0.06, 0.08, 0.46, 0.46], [0.42, 0.02, 0.46, 0.46],
+        [0.06, 0.46, 0.46, 0.46], [0.42, 0.46, 0.46, 0.46],
+        [0.24, 0.24, 0.46, 0.46], [0.18, 0.16, 0.4, 0.4]
+      ];
+      return base.slice(0, n);
+    },
+    rotations: [-6, 5, -4, 7, -8, 4]
+  }
+};
+
+function layoutsForCount(n) {
+  return Object.entries(COLLAGE_LAYOUTS).filter(
+    ([, def]) => n >= def.minPhotos && n <= def.maxPhotos
+  );
+}
+
+// ---- Frame definitions ----
+// Each frame is a function(ctx, w, h, gutter, bgColor) that draws the
+// overall background/frame BEFORE cells are drawn, and optionally a
+// function(ctx, w, h) drawn AFTER cells (e.g. taped corners on top).
+// Deliberately independent from the single-photo drawBorder logic.
+const COLLAGE_FRAMES = {
+  thickWhite: {
+    label: 'Thick White',
+    margin: 26,
+    before(ctx, w, h) {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, w, h);
+    }
+  },
+  filmstrip: {
+    label: 'Filmstrip',
+    margin: 20,
+    before(ctx, w, h) {
+      ctx.fillStyle = '#111111';
+      ctx.fillRect(0, 0, w, h);
+      // sprocket holes along left & right edges
+      ctx.fillStyle = '#f2f2f2';
+      const holeR = Math.max(3, w * 0.008);
+      const spacing = holeR * 5;
+      for (let y = spacing; y < h; y += spacing) {
+        ctx.beginPath();
+        ctx.arc(10, y, holeR, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(w - 10, y, holeR, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  },
+  torn: {
+    label: 'Torn Paper',
+    margin: 24,
+    before(ctx, w, h) {
+      ctx.fillStyle = '#faf6ee';
+      ctx.fillRect(0, 0, w, h);
+    },
+    after(ctx, w, h) {
+      // torn edge: jagged white border drawn inward from each side
+      const seedRand = mulberry32(1234);
+      ctx.fillStyle = '#faf6ee';
+      const jag = Math.max(6, w * 0.012);
+      drawTornEdge(ctx, w, h, jag, seedRand);
+    }
+  },
+  tapedCorners: {
+    label: 'Taped Corners',
+    margin: 22,
+    before(ctx, w, h) {
+      ctx.fillStyle = '#f0ece2';
+      ctx.fillRect(0, 0, w, h);
+    },
+    perCellAfter(ctx, rect) {
+      drawTapeCorner(ctx, rect.px, rect.py, -8);
+      drawTapeCorner(ctx, rect.px + rect.pw, rect.py, 8);
+    }
+  },
+  coloredGutter: {
+    label: 'Theme Color',
+    margin: 18,
+    before(ctx, w, h) {
+      const accent = getComputedStyle(document.body).getPropertyValue('--accent').trim() || '#c23b8f';
+      ctx.fillStyle = accent;
+      ctx.fillRect(0, 0, w, h);
+    }
+  },
+  photoStack: {
+    label: 'Photo Stack',
+    margin: 30,
+    before(ctx, w, h) {
+      ctx.fillStyle = '#e8e4da';
+      ctx.fillRect(0, 0, w, h);
+    },
+    perCellShadow: true
+  }
+};
+
+function mulberry32(seed) {
+  return function () {
+    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function drawTornEdge(ctx, w, h, jag, rand) {
+  ctx.save();
+  ctx.fillStyle = ctx.fillStyle; // keep caller's paper color
+  const paperColor = ctx.fillStyle;
+  ctx.fillStyle = paperColor;
+  // draw four jagged strips just inside each edge to fake a torn border
+  const step = jag * 2;
+  [['top'], ['bottom'], ['left'], ['right']].forEach(([side]) => {
+    ctx.beginPath();
+    if (side === 'top' || side === 'bottom') {
+      const y0 = side === 'top' ? 0 : h;
+      const dir = side === 'top' ? 1 : -1;
+      ctx.moveTo(0, y0);
+      for (let x = 0; x <= w; x += step) {
+        ctx.lineTo(x, y0 + dir * (rand() * jag));
+      }
+      ctx.lineTo(w, y0);
+      ctx.closePath();
+    } else {
+      const x0 = side === 'left' ? 0 : w;
+      const dir = side === 'left' ? 1 : -1;
+      ctx.moveTo(x0, 0);
+      for (let y = 0; y <= h; y += step) {
+        ctx.lineTo(x0 + dir * (rand() * jag), y);
+      }
+      ctx.lineTo(x0, h);
+      ctx.closePath();
+    }
+  });
+  ctx.restore();
+}
+
+function drawTapeCorner(ctx, x, y, angleDeg) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angleDeg * Math.PI / 180);
+  ctx.fillStyle = 'rgba(255,255,220,0.55)';
+  ctx.fillRect(-22, -10, 44, 20);
+  ctx.strokeStyle = 'rgba(0,0,0,0.08)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(-22, -10, 44, 20);
+  ctx.restore();
+}
+
+// ---- Slot management ----
+function loadImageFromFileCollage(file) {
+  return loadImageFromFile(file); // reuse existing helper from batch export
+}
+
+collageOpenBtn.addEventListener('click', () => {
+  collageOverlay.classList.add('open');
+  renderCollageOptionGrids();
+  updateCollagePreviewState();
+});
+collageCloseX.addEventListener('click', () => collageOverlay.classList.remove('open'));
+collageOverlay.addEventListener('click', (e) => {
+  if (e.target === collageOverlay) collageOverlay.classList.remove('open');
+});
+
+collageSelectBtn.addEventListener('click', () => {
+  collageFileInput.value = '';
+  collageFileInput.click();
+});
+
+collageFileInput.addEventListener('change', async (e) => {
+  const files = Array.from(e.target.files || []);
+  if (files.length === 0) return;
+  const room = 6 - collageSlots.length;
+  const toAdd = files.slice(0, Math.max(0, room));
+  for (const file of toAdd) {
+    try {
+      const img = await loadImageFromFileCollage(file);
+      collageSlots.push({ file, img });
+    } catch (err) { /* skip unreadable file */ }
+  }
+  renderCollageSlotList();
+  renderCollageOptionGrids();
+  updateCollagePreviewState();
+});
+
+function renderCollageSlotList() {
+  collageSlotListEl.innerHTML = '';
+  collageSlots.forEach((slot, i) => {
+    const thumb = document.createElement('div');
+    thumb.className = 'collage-slot-thumb';
+    const img = document.createElement('img');
+    img.src = slot.img.src;
+    const remove = document.createElement('div');
+    remove.className = 'collage-slot-remove';
+    remove.textContent = '×';
+    remove.addEventListener('click', () => {
+      collageSlots.splice(i, 1);
+      renderCollageSlotList();
+      renderCollageOptionGrids();
+      updateCollagePreviewState();
+    });
+    thumb.appendChild(img);
+    thumb.appendChild(remove);
+    collageSlotListEl.appendChild(thumb);
+  });
+}
+
+// ---- Option grids (layout + frame pickers) ----
+function miniLayoutSVG(def, n) {
+  const cells = def.cells(Math.max(n, def.minPhotos));
+  const parts = cells.map(([x, y, w, h]) =>
+    `<rect x="${x * 100}" y="${y * 100}" width="${w * 100 - 3}" height="${h * 100 - 3}" fill="#9ab" stroke="#456" stroke-width="1.5"/>`
+  ).join('');
+  return `<svg viewBox="0 0 100 100" preserveAspectRatio="none">${parts}</svg>`;
+}
+
+function miniFrameSVG(id) {
+  const swatches = {
+    thickWhite: '<rect width="100" height="100" fill="#fff" stroke="#ccc"/><rect x="14" y="14" width="72" height="72" fill="#9ab"/>',
+    filmstrip: '<rect width="100" height="100" fill="#111"/><rect x="16" y="8" width="68" height="84" fill="#9ab"/><circle cx="7" cy="20" r="3" fill="#eee"/><circle cx="7" cy="50" r="3" fill="#eee"/><circle cx="7" cy="80" r="3" fill="#eee"/><circle cx="93" cy="20" r="3" fill="#eee"/><circle cx="93" cy="50" r="3" fill="#eee"/><circle cx="93" cy="80" r="3" fill="#eee"/>',
+    torn: '<rect width="100" height="100" fill="#faf6ee"/><polygon points="12,10 20,14 15,20 25,24 18,30 88,30 88,88 12,88" fill="#9ab"/>',
+    tapedCorners: '<rect width="100" height="100" fill="#f0ece2"/><rect x="12" y="12" width="76" height="76" fill="#9ab"/><rect x="4" y="4" width="18" height="9" fill="#fff9c4" opacity="0.8" transform="rotate(-20 13 8)"/><rect x="78" y="4" width="18" height="9" fill="#fff9c4" opacity="0.8" transform="rotate(20 87 8)"/>',
+    coloredGutter: '<rect width="100" height="100" fill="#c23b8f"/><rect x="14" y="14" width="72" height="72" fill="#9ab"/>',
+    photoStack: '<rect width="100" height="100" fill="#e8e4da"/><rect x="26" y="20" width="55" height="55" fill="#cfd6e0" transform="rotate(-6 53 47)"/><rect x="20" y="26" width="55" height="55" fill="#9ab" transform="rotate(4 47 53)"/>'
+  };
+  return `<svg viewBox="0 0 100 100" preserveAspectRatio="none">${swatches[id] || ''}</svg>`;
+}
+
+function renderCollageOptionGrids() {
+  const n = Math.max(collageSlots.length, 2);
+  const available = layoutsForCount(n);
+
+  // if current layout no longer valid for slot count, fall back to first available
+  if (!available.find(([id]) => id === collageLayoutId) && available.length) {
+    collageLayoutId = available[0][0];
+  }
+
+  collageLayoutGrid.innerHTML = '';
+  available.forEach(([id, def]) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'collage-option-btn' + (id === collageLayoutId ? ' selected' : '');
+    btn.innerHTML = miniLayoutSVG(def, n) + `<span class="collage-option-label">${def.label}</span>`;
+    btn.addEventListener('click', () => {
+      collageLayoutId = id;
+      renderCollageOptionGrids();
+      updateCollagePreviewState();
+    });
+    collageLayoutGrid.appendChild(btn);
+  });
+
+  collageFrameGrid.innerHTML = '';
+  Object.entries(COLLAGE_FRAMES).forEach(([id, def]) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'collage-option-btn' + (id === collageFrameId ? ' selected' : '');
+    btn.innerHTML = miniFrameSVG(id) + `<span class="collage-option-label">${def.label}</span>`;
+    btn.addEventListener('click', () => {
+      collageFrameId = id;
+      renderCollageOptionGrids();
+      updateCollagePreviewState();
+    });
+    collageFrameGrid.appendChild(btn);
+  });
+}
+
+collageGutterEl.addEventListener('input', () => {
+  collageGutterVal.textContent = `${collageGutterEl.value}px`;
+  updateCollagePreviewState();
+});
+collageBgColorEl.addEventListener('input', updateCollagePreviewState);
+
+function updateCollagePreviewState() {
+  const ready = collageSlots.length >= 2;
+  collageGenerateBtn.disabled = !ready;
+  if (!ready) {
+    collagePreviewCanvas.style.display = 'none';
+    collagePreviewEmpty.style.display = 'block';
+    collageDownloadBtn.disabled = true;
+  }
+}
+
+// ---- Rendering ----
+// coverDraw: draws img into the given rect using cover-fit (fills rect,
+// cropping overflow) — same visual behavior as object-fit:cover.
+function coverDrawImage(ctx, img, x, y, w, h) {
+  const ir = img.naturalWidth / img.naturalHeight;
+  const dr = w / h;
+  let sx, sy, sw, sh;
+  if (ir > dr) {
+    sh = img.naturalHeight;
+    sw = sh * dr;
+    sx = (img.naturalWidth - sw) / 2;
+    sy = 0;
+  } else {
+    sw = img.naturalWidth;
+    sh = sw / dr;
+    sx = 0;
+    sy = (img.naturalHeight - sh) / 2;
+  }
+  ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h);
+}
+
+function renderCollage(targetCanvas, outW) {
+  const n = collageSlots.length;
+  if (n < 2) return;
+  const layout = COLLAGE_LAYOUTS[collageLayoutId];
+  const frame = COLLAGE_FRAMES[collageFrameId];
+  const gutter = parseInt(collageGutterEl.value, 10);
+  const bgColor = collageBgColorEl.value;
+  const margin = frame.margin;
+
+  const outH = Math.round(outW / (layout.aspect || 1));
+  targetCanvas.width = outW;
+  targetCanvas.height = outH;
+  const ctx = targetCanvas.getContext('2d');
+  ctx.clearRect(0, 0, outW, outH);
+
+  // frame background
+  if (frame.before) {
+    frame.before(ctx, outW, outH);
+  } else {
+    ctx.fillStyle = bgColor;
+    ctx.fillRect(0, 0, outW, outH);
+  }
+
+  const innerX = margin, innerY = margin;
+  const innerW = outW - margin * 2, innerH = outH - margin * 2;
+  const cells = layout.cells(n);
+  const isScattered = collageLayoutId === 'scattered';
+
+  cells.forEach(([fx, fy, fw, fh], i) => {
+    const slot = collageSlots[i];
+    if (!slot) return;
+    const cx = innerX + fx * innerW;
+    const cy = innerY + fy * innerH;
+    const cw = fw * innerW;
+    const ch = fh * innerH;
+    const gx = cx + gutter / 2;
+    const gy = cy + gutter / 2;
+    const gw = Math.max(4, cw - gutter);
+    const gh = Math.max(4, ch - gutter);
+
+    ctx.save();
+    if (isScattered) {
+      const rot = (layout.rotations[i] || 0) * Math.PI / 180;
+      const ccx = gx + gw / 2, ccy = gy + gh / 2;
+      ctx.translate(ccx, ccy);
+      ctx.rotate(rot);
+      ctx.translate(-ccx, -ccy);
+      ctx.shadowColor = 'rgba(0,0,0,0.35)';
+      ctx.shadowBlur = 10;
+      ctx.shadowOffsetY = 4;
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(gx - 6, gy - 6, gw + 12, gh + 12);
+      ctx.shadowColor = 'transparent';
+    } else if (frame.perCellShadow) {
+      ctx.shadowColor = 'rgba(0,0,0,0.25)';
+      ctx.shadowBlur = 8;
+      ctx.shadowOffsetY = 3;
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(gx, gy, gw, gh);
+      ctx.shadowColor = 'transparent';
+    } else if (!bgColor) {
+      // no-op
+    }
+
+    ctx.beginPath();
+    ctx.rect(gx, gy, gw, gh);
+    ctx.clip();
+    coverDrawImage(ctx, slot.img, gx, gy, gw, gh);
+    ctx.restore();
+
+    if (frame.perCellAfter) {
+      frame.perCellAfter(ctx, { px: gx + gw / 2, py: gy, pw: gw });
+    }
+  });
+
+  if (frame.after) frame.after(ctx, outW, outH);
+}
+
+collageGenerateBtn.addEventListener('click', () => {
+  renderCollage(collagePreviewCanvas, 900);
+  collagePreviewCanvas.style.display = 'block';
+  collagePreviewEmpty.style.display = 'none';
+  collageDownloadBtn.disabled = false;
+});
+
+collageDownloadBtn.addEventListener('click', () => {
+  const exportCanvas = document.createElement('canvas');
+  renderCollage(exportCanvas, 2000);
+  const dataUrl = exportCanvas.toDataURL('image/jpeg', 0.92);
+  const link = document.createElement('a');
+  link.download = `y2kam-collage-${Date.now()}.jpg`;
+  link.href = dataUrl;
+  link.click();
+});
