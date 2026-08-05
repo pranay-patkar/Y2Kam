@@ -884,6 +884,24 @@
     text-align: center;
     cursor: pointer;
     font-family: inherit;
+    z-index: 2;
+  }
+  .collage-slot-thumb { cursor: pointer; }
+  .collage-slot-thumb canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+  .collage-slot-edited-dot {
+    position: absolute;
+    bottom: 2px;
+    left: 2px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #4caf50;
+    border: 1px solid #fff;
+    z-index: 2;
   }
 
   .collage-section-title {
@@ -951,4 +969,20 @@
     font-size: 11px;
     text-align: center;
     padding: 20px;
+  }
+
+  .collage-edit-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    background: var(--accent, #c23b8f);
+    color: #fff;
+    padding: 6px 10px;
+    font-size: 11px;
+    font-weight: bold;
+  }
+  .collage-edit-banner .win95-btn {
+    flex: none;
+    padding: 3px 12px;
   }
