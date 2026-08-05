@@ -263,6 +263,16 @@
         </details>
 
         <details class="section-group">
+          <summary class="section-label">Crop &amp; Straighten</summary>
+          <div class="button-row">
+            <button class="win95-btn" id="openCropBtn" type="button" disabled>✂ Open Crop Tool...</button>
+          </div>
+          <div id="cropActiveIndicator" style="display:none; font-size:10px; color:#1f7a52; margin-top:4px;">
+            ✔ Crop active — <button type="button" class="win95-btn" id="resetCropBtn" style="font-size:10px;padding:2px 6px;">Reset</button>
+          </div>
+        </details>
+
+        <details class="section-group">
           <summary class="section-label">Stamps</summary>
           <div class="checkbox-row">
             <input type="checkbox" id="playStamp">
@@ -335,6 +345,10 @@
             <button type="button" class="win95-btn" id="savePresetBtn">💾 Save</button>
           </div>
           <div id="myPresetsList" class="my-presets-list"></div>
+          <div class="button-row" style="margin-top:4px;">
+            <button class="win95-btn" id="copyLookLinkBtn" type="button" disabled>🔗 Copy shareable link</button>
+          </div>
+          <div id="copyLookLinkFeedback" style="font-size:10px;color:#1f7a52;display:none;margin-top:2px;">Link copied!</div>
         </details>
 
         <details class="section-group" open>
@@ -442,6 +456,9 @@
 
       <div class="collage-section-title">Layout</div>
       <div class="collage-option-grid" id="collageLayoutGrid"></div>
+      <div class="button-row" style="margin-top:4px;">
+        <button class="win95-btn" id="layoutBuilderOpenBtn" type="button">⚙ Build Custom Layout…</button>
+      </div>
 
       <div class="collage-section-title">Frame</div>
       <div class="collage-option-grid" id="collageFrameGrid"></div>
@@ -449,6 +466,12 @@
       <div class="collage-section-title">Moods</div>
       <div class="collage-mood-row" id="collageMoodRow"></div>
       <div class="collage-note collage-sticker-hint">Applies a matching look, frame, and layout to every photo at once.</div>
+
+      <div class="button-row" style="margin-top:6px;">
+        <button class="win95-btn" id="collageApplyLookBtn" type="button">
+          ✦ Apply my current look to all slots
+        </button>
+      </div>
 
       <div class="field-row">
         <label for="collageGutter">Gutter</label>
@@ -489,6 +512,71 @@
   </div>
 </div>
 
+
+<div class="modal-overlay" id="cropOverlay">
+  <div class="modal-dialog crop-dialog">
+    <div class="modal-titlebar">
+      <span>Crop &amp; Straighten</span>
+      <div class="win-buttons">
+        <div class="win-btn" id="cropCloseX">×</div>
+      </div>
+    </div>
+    <div class="modal-body crop-body">
+      <div class="crop-note">Drag to set crop area. Use the slider to straighten.</div>
+      <div class="crop-canvas-wrap" id="cropCanvasWrap">
+        <canvas id="cropCanvas"></canvas>
+        <div class="crop-rect-overlay" id="cropRectOverlay"></div>
+      </div>
+      <div class="field-row" style="margin-top:8px;">
+        <label for="cropRotateSlider">Rotate</label>
+        <input type="range" id="cropRotateSlider" min="-45" max="45" value="0">
+        <span class="val" id="cropRotateVal">0°</span>
+      </div>
+      <div class="button-row">
+        <button class="win95-btn" id="cropResetInModalBtn" type="button">Reset</button>
+        <button class="win95-btn primary" id="cropApplyBtn" type="button">Apply Crop</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="layoutBuilderOverlay">
+  <div class="modal-dialog layout-builder-dialog">
+    <div class="modal-titlebar">
+      <span>Build Custom Layout</span>
+      <div class="win-buttons">
+        <div class="win-btn" id="layoutBuilderCloseX">×</div>
+      </div>
+    </div>
+    <div class="modal-body layout-builder-body">
+      <div class="crop-note">Pick rows × columns, then drag the dividers to set proportions. Saved layouts show up in the Layout grid above.</div>
+
+      <div class="layout-builder-controls">
+        <div class="layout-builder-stepper">
+          <span class="layout-builder-stepper-label">Rows</span>
+          <button class="win95-btn" id="layoutBuilderRowsDec" type="button">−</button>
+          <span class="layout-builder-stepper-val" id="layoutBuilderRowsVal">2</span>
+          <button class="win95-btn" id="layoutBuilderRowsInc" type="button">+</button>
+        </div>
+        <div class="layout-builder-stepper">
+          <span class="layout-builder-stepper-label">Cols</span>
+          <button class="win95-btn" id="layoutBuilderColsDec" type="button">−</button>
+          <span class="layout-builder-stepper-val" id="layoutBuilderColsVal">2</span>
+          <button class="win95-btn" id="layoutBuilderColsInc" type="button">+</button>
+        </div>
+      </div>
+
+      <div class="layout-builder-preview-wrap">
+        <div class="layout-builder-preview" id="layoutBuilderPreview"></div>
+      </div>
+
+      <div class="button-row">
+        <button class="win95-btn" id="layoutBuilderResetBtn" type="button">Reset to Equal</button>
+        <button class="win95-btn primary" id="layoutBuilderSaveBtn" type="button">💾 Save Layout</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <div class="modal-overlay" id="processingOverlay">
   <div class="modal-dialog processing-dialog">
