@@ -857,7 +857,7 @@
   .collage-slot-thumb {
     position: relative;
     width: 56px;
-    height: 56px;
+    height: 74px;
     border: 2px solid var(--inset-border);
     border-top-color: var(--inset-border-dark);
     border-left-color: var(--inset-border-dark);
@@ -867,7 +867,7 @@
   }
   .collage-slot-thumb img {
     width: 100%;
-    height: 100%;
+    height: 56px;
     object-fit: cover;
     display: block;
   }
@@ -889,12 +889,12 @@
   .collage-slot-thumb { cursor: pointer; }
   .collage-slot-thumb canvas {
     width: 100%;
-    height: 100%;
+    height: 56px;
     display: block;
   }
   .collage-slot-edited-dot {
     position: absolute;
-    bottom: 2px;
+    top: 2px;
     left: 2px;
     width: 8px;
     height: 8px;
@@ -902,6 +902,29 @@
     background: #4caf50;
     border: 1px solid #fff;
     z-index: 2;
+  }
+
+  .collage-slot-reorder {
+    display: flex;
+    width: 100%;
+    height: 18px;
+  }
+  .collage-slot-move {
+    flex: 1;
+    background: var(--inset-border, #ccc);
+    color: #222;
+    font-size: 13px;
+    line-height: 18px;
+    height: 18px;
+    text-align: center;
+    cursor: pointer;
+    font-family: inherit;
+    user-select: none;
+  }
+  .collage-slot-move:active { background: rgba(0,0,0,0.8); }
+  .collage-slot-move.disabled {
+    opacity: 0.3;
+    pointer-events: none;
   }
 
   .collage-section-title {
