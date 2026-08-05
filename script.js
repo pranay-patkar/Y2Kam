@@ -169,6 +169,10 @@ aboutOverlay.addEventListener('click', (e) => {
 });
 
 openBtn.addEventListener('click', () => {
+  if (editingCollageSlotIndex !== null) {
+    statusLeft.textContent = 'Finish editing this collage photo first (tap "Done Editing")';
+    return;
+  }
   try {
     fileInput.value = '';
     fileInput.click();
@@ -694,6 +698,10 @@ let fixedExifData = randomExifData();
 
 
 function loadImageFile(file, sourceLabel) {
+  if (editingCollageSlotIndex !== null) {
+    statusLeft.textContent = 'Finish editing this collage photo first (tap "Done Editing")';
+    return;
+  }
   if (!file) {
     statusLeft.textContent = 'No file selected';
     return;
@@ -746,6 +754,10 @@ fileInput.addEventListener('change', (e) => {
 const cameraInput = document.getElementById('cameraInput');
 const takePhotoBtn = document.getElementById('takePhotoBtn');
 takePhotoBtn.addEventListener('click', () => {
+  if (editingCollageSlotIndex !== null) {
+    statusLeft.textContent = 'Finish editing this collage photo first (tap "Done Editing")';
+    return;
+  }
   cameraInput.value = '';
   cameraInput.click();
 });
@@ -2604,9 +2616,106 @@ batchProcessBtn.addEventListener('click', processBatch);
 // or per-photo state yet — that's Stage 2. Frame drawing is fully separate
 // from the single-photo borderSelect logic by design.
 
-let collageSlots = []; // { file, img }
+let collageSlots = []; // { file, img, state, fixedTimestamp, fixedExifData, leakSeed, edited, editedCanvas }
 let collageLayoutId = 'grid2x2';
 let collageFrameId = 'thickWhite';
+let editingCollageSlotIndex = null; // null when not editing a slot in the main editor
+
+// stashed main-editor state while a collage slot is being edited, so the
+// user's own single-photo work is untouched when they return
+let stashedMainEditor = null;
+
+const collageEditBanner = document.getElementById('collageEditBanner');
+const collageEditBannerText = document.getElementById('collageEditBannerText');
+const collageDoneEditingBtn = document.getElementById('collageDoneEditingBtn');
+
+// Deep-clone a slot's saved state bundle (state + fixedTimestamp/exif/leakSeed)
+function cloneSlotStateBundle(bundle) {
+  return JSON.parse(JSON.stringify(bundle));
+}
+
+// Renders a slot's edited look into its own offscreen canvas via drawEffects,
+// exactly like the batch export swap trick — but reused live for thumbnails
+// and for the final collage composite.
+function renderSlotEditedCanvas(slot, maxDim) {
+  const savedSourceImg = sourceImg;
+  const savedTimestamp = fixedTimestamp;
+  const savedExifData = fixedExifData;
+  const savedLeakSeed = { ...leakSeed };
+
+  sourceImg = slot.img;
+  fixedTimestamp = slot.fixedTimestamp;
+  fixedExifData = slot.fixedExifData;
+  leakSeed = { ...slot.leakSeed };
+
+  // temporarily apply the slot's control state so drawEffects reads the
+  // right values, without going through applyState's DOM side-effects/render
+  const restoreControls = silentlyApplyControlsForState(slot.state);
+
+  let w = slot.img.naturalWidth, h = slot.img.naturalHeight;
+  const scale = Math.min(1, maxDim / Math.max(w, h));
+  w = Math.round(w * scale);
+  h = Math.round(h * scale);
+
+  const offCanvas = document.createElement('canvas');
+  drawEffects(offCanvas, w, h);
+
+  restoreControls();
+  sourceImg = savedSourceImg;
+  fixedTimestamp = savedTimestamp;
+  fixedExifData = savedExifData;
+  leakSeed = savedLeakSeed;
+
+  return offCanvas;
+}
+
+// Applies a state object's values into the same control elements getState()
+// reads from, WITHOUT the DOM-visible side effects applyState() does (theme
+// class swaps, active-button highlighting, render() calls). Used to read
+// a slot's look into drawEffects for an off-screen render, then restore
+// whatever the visible controls held before. Returns a restore function.
+function silentlyApplyControlsForState(s) {
+  const controls = [
+    [presetEl, 'preset'], [grainEl, 'grain'], [flashEl, 'flash'], [saturEl, 'satur'],
+    [pixelEl, 'pixel'], [fadeEl, 'fade'], [chromaEl, 'chroma'], [leakEl, 'leak'],
+    [scanlinesEl, 'scanlines'], [sharpenEl, 'sharpen'], [vibranceEl, 'vibrance'],
+    [tvcurveEl, 'tvcurve'], [redBalanceEl, 'redBalance'], [greenBalanceEl, 'greenBalance'],
+    [blueBalanceEl, 'blueBalance'], [borderSelect, 'border'], [overlaySelect, 'overlay'],
+    [overlayOpacityEl, 'overlayOpacity'], [pixelEffectSelect, 'pixelEffect'],
+    [pixelEffectStrengthEl, 'pixelEffectStrength'], [customStampTextEl, 'customStampText'],
+    [polaroidCaptionText, 'polaroidCaptionText'], [polaroidCaptionNudge, 'polaroidCaptionNudge'],
+    [qualityEl, 'quality']
+  ];
+  const checkboxes = [
+    [winFrameEl, 'winFrame'], [playStampEl, 'playStamp'], [batteryStampEl, 'batteryStamp'],
+    [exifStampEl, 'exifStamp'], [timestampEl, 'timestamp'], [vignetteEl, 'vignette']
+  ];
+  const colors = [[winFrameColorEl, 'winFrameColor']];
+
+  const prevValues = controls.map(([el]) => el.value);
+  const prevChecked = checkboxes.map(([el]) => el.checked);
+  const prevColors = colors.map(([el]) => el.value);
+  const prevActiveLut = activeLut;
+  const prevInkColor = polaroidInkColor;
+
+  controls.forEach(([el, key]) => { if (key in s) el.value = s[key]; });
+  checkboxes.forEach(([el, key]) => { if (key in s) el.checked = s[key]; });
+  colors.forEach(([el, key]) => { if (key in s) el.value = s[key]; });
+  // Note: theme (document.body.className) is intentionally NOT swapped here —
+  // it only affects UI chrome styling, not drawEffects' pixel output, and
+  // swapping it would cause a visible flash across the whole app during
+  // every offscreen thumbnail/collage render.
+  activeLut = s.activeLut;
+  polaroidInkColor = s.polaroidInkColor;
+
+  return function restore() {
+    controls.forEach(([el], i) => { el.value = prevValues[i]; });
+    checkboxes.forEach(([el], i) => { el.checked = prevChecked[i]; });
+    colors.forEach(([el], i) => { el.value = prevColors[i]; });
+    activeLut = prevActiveLut;
+    polaroidInkColor = prevInkColor;
+  };
+}
 
 const collageOverlay = document.getElementById('collageOverlay');
 const collageOpenBtn = document.getElementById('collageOpenBtn');
@@ -2854,6 +2963,7 @@ function loadImageFromFileCollage(file) {
 }
 
 collageOpenBtn.addEventListener('click', () => {
+  if (editingCollageSlotIndex !== null) return; // finish editing the slot first
   collageOverlay.classList.add('open');
   renderCollageOptionGrids();
   updateCollagePreviewState();
@@ -2876,7 +2986,22 @@ collageFileInput.addEventListener('change', async (e) => {
   for (const file of toAdd) {
     try {
       const img = await loadImageFromFileCollage(file);
-      collageSlots.push({ file, img });
+      // inherit whatever look is currently active in the main editor as
+      // this slot's starting state
+      const inheritedState = sourceImg ? getState() : defaultCollageState();
+      const newSlot = {
+        file, img,
+        state: inheritedState,
+        fixedTimestamp: sourceImg ? fixedTimestamp : randomTimestamp(),
+        fixedExifData: sourceImg ? fixedExifData : randomExifData(),
+        leakSeed: sourceImg ? { ...leakSeed } : { x: 0.3, y: 0.2, angle: 25 },
+        edited: false,
+        editedCanvas: null
+      };
+      // pre-render a thumbnail so an inherited (non-default) look shows
+      // immediately, without waiting for the user to open/close the editor
+      newSlot.editedCanvas = renderSlotEditedCanvas(newSlot, 200);
+      collageSlots.push(newSlot);
     } catch (err) { /* skip unreadable file */ }
   }
   renderCollageSlotList();
@@ -2884,13 +3009,48 @@ collageFileInput.addEventListener('change', async (e) => {
   updateCollagePreviewState();
 });
 
+// Fallback default state (matches app defaults) for the rare case a slot is
+// added before any photo has ever been opened in the main editor.
+function defaultCollageState() {
+  return {
+    theme: '', activeLut: 'none', polaroidInkColor: '#1a1a1a',
+    leakSeed: { x: 0.3, y: 0.2, angle: 25 }, preset: 'none',
+    grain: 0, flash: 0, satur: 0, pixel: 0, fade: 0, chroma: 0, leak: 0,
+    scanlines: 0, sharpen: 0, vibrance: 0, tvcurve: 0,
+    redBalance: 0, greenBalance: 0, blueBalance: 0,
+    border: 'none', winFrame: false, winFrameColor: '#000000',
+    overlay: 'none', overlayOpacity: 50, pixelEffect: 'none', pixelEffectStrength: 50,
+    playStamp: false, batteryStamp: false, exifStamp: false, customStampText: '',
+    polaroidCaptionText: '', polaroidCaptionNudge: 0, quality: 90,
+    timestamp: false, vignette: false
+  };
+}
+
 function renderCollageSlotList() {
   collageSlotListEl.innerHTML = '';
   collageSlots.forEach((slot, i) => {
     const thumb = document.createElement('div');
     thumb.className = 'collage-slot-thumb';
-    const img = document.createElement('img');
-    img.src = slot.img.src;
+
+    const thumbCanvas = document.createElement('canvas');
+    thumbCanvas.width = 56;
+    thumbCanvas.height = 56;
+    const tctx = thumbCanvas.getContext('2d');
+    const srcCanvas = slot.editedCanvas || slot.img;
+    coverDrawImage(tctx, srcCanvas, 0, 0, 56, 56);
+
+    thumb.addEventListener('click', (ev) => {
+      if (ev.target.classList.contains('collage-slot-remove')) return;
+      startEditingCollageSlot(i);
+    });
+
+    if (slot.edited) {
+      const dot = document.createElement('div');
+      dot.className = 'collage-slot-edited-dot';
+      dot.title = 'Edited';
+      thumb.appendChild(dot);
+    }
+
     const remove = document.createElement('div');
     remove.className = 'collage-slot-remove';
     remove.textContent = '×';
@@ -2900,11 +3060,88 @@ function renderCollageSlotList() {
       renderCollageOptionGrids();
       updateCollagePreviewState();
     });
-    thumb.appendChild(img);
+    thumb.appendChild(thumbCanvas);
     thumb.appendChild(remove);
     collageSlotListEl.appendChild(thumb);
   });
 }
+
+// ---- Enter/exit per-slot editing in the main editor ----
+function startEditingCollageSlot(index) {
+  const slot = collageSlots[index];
+  if (!slot) return;
+
+  // stash whatever the main editor currently holds (could be the user's
+  // own separate photo, or a previous collage edit session)
+  stashedMainEditor = {
+    sourceImg: sourceImg,
+    state: sourceImg ? getState() : null,
+    fixedTimestamp: fixedTimestamp,
+    fixedExifData: fixedExifData,
+    leakSeed: { ...leakSeed }
+  };
+
+  editingCollageSlotIndex = index;
+
+  sourceImg = slot.img;
+  isPlaceholderImage = false;
+  fixedTimestamp = slot.fixedTimestamp;
+  fixedExifData = slot.fixedExifData;
+  leakSeed = { ...slot.leakSeed };
+  applyState(slot.state); // this also calls render()
+
+  emptyState.style.display = 'none';
+  canvas.style.display = 'block';
+  saveBtn.disabled = false;
+  menuSaveBtn.disabled = false;
+  menuResetBtn.disabled = false;
+  menuRandomizeBtn.disabled = false;
+  menuShuffleLookBtn.disabled = false;
+
+  collageEditBannerText.textContent = `Editing Collage Photo ${index + 1} of ${collageSlots.length}`;
+  collageEditBanner.style.display = 'flex';
+  collageOverlay.classList.remove('open');
+}
+
+function finishEditingCollageSlot() {
+  if (editingCollageSlotIndex === null) return;
+  const slot = collageSlots[editingCollageSlotIndex];
+
+  slot.state = getState();
+  slot.fixedTimestamp = fixedTimestamp;
+  slot.fixedExifData = fixedExifData;
+  slot.leakSeed = { ...leakSeed };
+  slot.edited = true;
+  slot.editedCanvas = renderSlotEditedCanvas(slot, 200);
+
+  editingCollageSlotIndex = null;
+  collageEditBanner.style.display = 'none';
+
+  // restore whatever the main editor held before this edit session
+  if (stashedMainEditor && stashedMainEditor.sourceImg) {
+    sourceImg = stashedMainEditor.sourceImg;
+    fixedTimestamp = stashedMainEditor.fixedTimestamp;
+    fixedExifData = stashedMainEditor.fixedExifData;
+    leakSeed = stashedMainEditor.leakSeed;
+    applyState(stashedMainEditor.state);
+  } else {
+    sourceImg = null;
+    isPlaceholderImage = true;
+    canvas.style.display = 'none';
+    emptyState.style.display = '';
+    saveBtn.disabled = true;
+    menuSaveBtn.disabled = true;
+    menuResetBtn.disabled = true;
+    menuRandomizeBtn.disabled = true;
+    menuShuffleLookBtn.disabled = true;
+  }
+  stashedMainEditor = null;
+
+  renderCollageSlotList();
+  collageOverlay.classList.add('open');
+}
+
+collageDoneEditingBtn.addEventListener('click', finishEditingCollageSlot);
 
 // ---- Option grids (layout + frame pickers) ----
 function miniLayoutSVG(def, n) {
@@ -2985,19 +3222,22 @@ function updateCollagePreviewState() {
 // coverDraw: draws img into the given rect using cover-fit (fills rect,
 // cropping overflow) — same visual behavior as object-fit:cover.
 function coverDrawImage(ctx, img, x, y, w, h) {
-  const ir = img.naturalWidth / img.naturalHeight;
+  // works with both <img> and <canvas> sources
+  const iw = img.naturalWidth || img.width;
+  const ih = img.naturalHeight || img.height;
+  const ir = iw / ih;
   const dr = w / h;
   let sx, sy, sw, sh;
   if (ir > dr) {
-    sh = img.naturalHeight;
+    sh = ih;
     sw = sh * dr;
-    sx = (img.naturalWidth - sw) / 2;
+    sx = (iw - sw) / 2;
     sy = 0;
   } else {
-    sw = img.naturalWidth;
+    sw = iw;
     sh = sw / dr;
     sx = 0;
-    sy = (img.naturalHeight - sh) / 2;
+    sy = (ih - sh) / 2;
   }
   ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h);
 }
@@ -3017,6 +3257,13 @@ function renderCollage(targetCanvas, outW) {
   const ctx = targetCanvas.getContext('2d');
   ctx.clearRect(0, 0, outW, outH);
 
+  // Render each slot's edited look at a resolution matched to its cell size
+  // in this specific output, so exports stay crisp and previews stay fast.
+  const cellLongEdge = Math.round(outW / Math.ceil(Math.sqrt(n)));
+  const renderedSlots = collageSlots.map(slot =>
+    renderSlotEditedCanvas(slot, Math.max(cellLongEdge, 300))
+  );
+
   // frame background
   if (frame.before) {
     frame.before(ctx, outW, outH);
@@ -3032,7 +3279,8 @@ function renderCollage(targetCanvas, outW) {
 
   cells.forEach(([fx, fy, fw, fh], i) => {
     const slot = collageSlots[i];
-    if (!slot) return;
+    const editedImg = renderedSlots[i];
+    if (!slot || !editedImg) return;
     const cx = innerX + fx * innerW;
     const cy = innerY + fy * innerH;
     const cw = fw * innerW;
@@ -3069,7 +3317,7 @@ function renderCollage(targetCanvas, outW) {
     ctx.beginPath();
     ctx.rect(gx, gy, gw, gh);
     ctx.clip();
-    coverDrawImage(ctx, slot.img, gx, gy, gw, gh);
+    coverDrawImage(ctx, editedImg, gx, gy, gw, gh);
     ctx.restore();
 
     if (frame.perCellAfter) {
