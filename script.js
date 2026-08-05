@@ -2966,6 +2966,10 @@ collageOpenBtn.addEventListener('click', () => {
   if (editingCollageSlotIndex !== null) return; // finish editing the slot first
   collageOverlay.classList.add('open');
   renderCollageOptionGrids();
+  renderCollageStickerPalette();
+  renderCollagePlacedStickers();
+  renderCollageMoodRow();
+  renderCollageLayoutPresets();
   updateCollagePreviewState();
 });
 collageCloseX.addEventListener('click', () => collageOverlay.classList.remove('open'));
@@ -3303,6 +3307,293 @@ function coverDrawImage(ctx, img, x, y, w, h) {
   ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h);
 }
 
+// --- Collage Moods ---
+// A curated one-tap combo of {activeLut, grain/fade/etc look, frame, layout}
+// applied to the whole collage at once — the fast path for people who don't
+// want to open the editor per-slot. Deliberately not user-savable (that's
+// what layout presets + per-slot editing are for); this is a fixed set of
+// starting points.
+const COLLAGE_MOODS = {
+  sunfaded: {
+    label: 'Sun-Faded',
+    frameId: 'thickWhite',
+    layoutId: null, // null = keep whatever layout is currently selected
+    look: { activeLut: 'duststorm', grain: 15, flash: 35, satur: 120, fade: 10, chroma: 5, leak: 40, scanlines: 0, border: 'polaroid', timestamp: true, vignette: true }
+  },
+  nightOut: {
+    label: 'Night Out',
+    frameId: 'coloredGutter',
+    layoutId: null,
+    look: { activeLut: 'nightglam', grain: 40, flash: 45, satur: 85, fade: 8, chroma: 15, leak: 0, scanlines: 0, border: 'none', timestamp: false, vignette: true }
+  },
+  filmRoll: {
+    label: 'Film Roll',
+    frameId: 'filmstrip',
+    layoutId: null,
+    look: { activeLut: 'harborteal', grain: 25, flash: 10, satur: 105, fade: 30, chroma: 15, leak: 55, scanlines: 0, border: 'polaroid', timestamp: true, vignette: true }
+  },
+  scrapbook: {
+    label: 'Scrapbook',
+    frameId: 'photoStack',
+    layoutId: null,
+    look: { activeLut: 'pinkinverted', grain: 20, flash: 20, satur: 110, fade: 25, chroma: 5, leak: 15, scanlines: 0, border: 'polaroid', timestamp: true, vignette: false }
+  }
+};
+
+const collageMoodRowEl = document.getElementById('collageMoodRow');
+
+function renderCollageMoodRow() {
+  collageMoodRowEl.innerHTML = '';
+  Object.entries(COLLAGE_MOODS).forEach(([id, mood]) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'win95-btn collage-mood-btn';
+    btn.textContent = mood.label;
+    btn.addEventListener('click', () => applyCollageMood(id));
+    collageMoodRowEl.appendChild(btn);
+  });
+}
+
+function applyCollageMood(moodId) {
+  const mood = COLLAGE_MOODS[moodId];
+  if (!mood || collageSlots.length === 0) return;
+
+  collageFrameId = mood.frameId;
+  if (mood.layoutId) collageLayoutId = mood.layoutId;
+
+  collageSlots.forEach(slot => {
+    slot.state = { ...slot.state, ...mood.look };
+    slot.edited = true;
+    slot.editedCanvas = renderSlotEditedCanvas(slot, 200);
+  });
+
+  renderCollageOptionGrids();
+  renderCollageSlotList();
+  updateCollagePreviewState();
+  statusLeft.textContent = `Applied "${mood.label}" mood`;
+}
+
+
+const COLLAGE_LAYOUT_PRESETS_KEY = 'y2kam_collage_layout_presets';
+
+function loadCollageLayoutPresets() {
+  try {
+    return JSON.parse(localStorage.getItem(COLLAGE_LAYOUT_PRESETS_KEY) || '[]');
+  } catch (err) {
+    return [];
+  }
+}
+
+function saveCollageLayoutPresets(list) {
+  try {
+    localStorage.setItem(COLLAGE_LAYOUT_PRESETS_KEY, JSON.stringify(list));
+  } catch (err) {
+    statusLeft.textContent = 'Could not save layout preset (storage full?)';
+  }
+}
+
+const collageLayoutPresetListEl = document.getElementById('collageLayoutPresetList');
+const collageSaveLayoutPresetBtn = document.getElementById('collageSaveLayoutPresetBtn');
+const collageLayoutPresetNameEl = document.getElementById('collageLayoutPresetName');
+
+function renderCollageLayoutPresets() {
+  const presets = loadCollageLayoutPresets();
+  collageLayoutPresetListEl.innerHTML = '';
+  if (presets.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'my-presets-empty';
+    empty.textContent = 'No saved layouts yet — set one up and tap Save Layout.';
+    collageLayoutPresetListEl.appendChild(empty);
+    return;
+  }
+  presets.forEach((p, idx) => {
+    const row = document.createElement('div');
+    row.className = 'my-preset-row';
+
+    const nameBtn = document.createElement('button');
+    nameBtn.type = 'button';
+    nameBtn.className = 'win95-btn my-preset-load';
+    nameBtn.textContent = p.name;
+    nameBtn.addEventListener('click', () => {
+      collageLayoutId = p.layoutId;
+      collageFrameId = p.frameId;
+      collageGutterEl.value = p.gutter;
+      collageGutterVal.textContent = `${p.gutter}px`;
+      collageBgColorEl.value = p.bgColor;
+      renderCollageOptionGrids();
+      updateCollagePreviewState();
+      statusLeft.textContent = `Loaded layout "${p.name}"`;
+    });
+
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'win95-btn my-preset-delete';
+    delBtn.textContent = '✕';
+    delBtn.setAttribute('aria-label', `Delete layout preset ${p.name}`);
+    delBtn.addEventListener('click', () => {
+      const all = loadCollageLayoutPresets();
+      all.splice(idx, 1);
+      saveCollageLayoutPresets(all);
+      renderCollageLayoutPresets();
+      statusLeft.textContent = `Deleted layout "${p.name}"`;
+    });
+
+    row.appendChild(nameBtn);
+    row.appendChild(delBtn);
+    collageLayoutPresetListEl.appendChild(row);
+  });
+}
+
+collageSaveLayoutPresetBtn.addEventListener('click', () => {
+  const name = (collageLayoutPresetNameEl.value || '').trim().slice(0, 24)
+    || `Layout ${loadCollageLayoutPresets().length + 1}`;
+  const presets = loadCollageLayoutPresets();
+  presets.push({
+    name,
+    layoutId: collageLayoutId,
+    frameId: collageFrameId,
+    gutter: parseInt(collageGutterEl.value, 10),
+    bgColor: collageBgColorEl.value
+  });
+  saveCollageLayoutPresets(presets);
+  collageLayoutPresetNameEl.value = '';
+  renderCollageLayoutPresets();
+  statusLeft.textContent = `Saved layout "${name}"`;
+});
+
+
+const collageCaptionTextEl = document.getElementById('collageCaptionText');
+collageCaptionTextEl.addEventListener('input', updateCollagePreviewState);
+
+function drawCollageCaption(ctx, w, h) {
+  const text = collageCaptionTextEl.value.trim();
+  if (!text) return;
+  const fontSize = Math.max(14, Math.round(h * 0.045));
+  ctx.font = `bold ${fontSize}px 'Courier New', monospace`;
+  ctx.textBaseline = 'bottom';
+  ctx.textAlign = 'center';
+  const pad = fontSize * 0.6;
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.fillText(text, w / 2 + 1, h - pad + 1);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(text, w / 2, h - pad);
+}
+
+// --- Collage Stickers ---
+// A small fixed palette of Y2K-flavored stickers. Each entry is an SVG path
+// set (drawn directly on the canvas via Path2D) rather than an image asset,
+// so stickers scale cleanly to any output resolution with no extra loading.
+const COLLAGE_STICKERS = {
+  heart:   { label: '♥', color: '#ff6fa5' },
+  star:    { label: '★', color: '#ffd23f' },
+  tape:    { label: '▭', color: '#f4e9c1' },
+  film:    { label: '▤', color: '#222222' },
+  sparkle: { label: '✦', color: '#7fd8ff' },
+  flower:  { label: '❀', color: '#c58cff' }
+};
+
+// placed stickers: { id, type, fx, fy } — fx/fy are fractional (0–1)
+// positions within the collage canvas so they scale with output size.
+let collageStickers = [];
+let collageStickerIdCounter = 0;
+
+const collageStickerPaletteEl = document.getElementById('collageStickerPalette');
+
+function renderCollageStickerPalette() {
+  collageStickerPaletteEl.innerHTML = '';
+  Object.entries(COLLAGE_STICKERS).forEach(([type, def]) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'collage-sticker-btn';
+    btn.style.color = def.color;
+    btn.textContent = def.label;
+    btn.title = `Add ${type} sticker`;
+    btn.addEventListener('click', () => {
+      collageStickers.push({
+        id: collageStickerIdCounter++,
+        type,
+        fx: 0.5 + (Math.random() * 0.2 - 0.1),
+        fy: 0.5 + (Math.random() * 0.2 - 0.1)
+      });
+      renderCollagePlacedStickers();
+      updateCollagePreviewState();
+    });
+    collageStickerPaletteEl.appendChild(btn);
+  });
+}
+
+// Placed stickers are shown as draggable chips over the preview canvas so
+// the user can position them before generating/downloading. Drag updates
+// fx/fy live; a small × removes the sticker.
+const collagePreviewWrapEl = document.querySelector('.collage-preview-wrap');
+let collagePlacedLayer = null;
+
+function renderCollagePlacedStickers() {
+  if (!collagePlacedLayer) {
+    collagePlacedLayer = document.createElement('div');
+    collagePlacedLayer.className = 'collage-sticker-layer';
+    collagePreviewWrapEl.appendChild(collagePlacedLayer);
+  }
+  collagePlacedLayer.innerHTML = '';
+  collageStickers.forEach(st => {
+    const def = COLLAGE_STICKERS[st.type];
+    const chip = document.createElement('div');
+    chip.className = 'collage-sticker-chip';
+    chip.style.left = `${st.fx * 100}%`;
+    chip.style.top = `${st.fy * 100}%`;
+    chip.style.color = def.color;
+    chip.textContent = def.label;
+
+    const del = document.createElement('div');
+    del.className = 'collage-sticker-chip-remove';
+    del.textContent = '×';
+    del.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      collageStickers = collageStickers.filter(s => s.id !== st.id);
+      renderCollagePlacedStickers();
+      updateCollagePreviewState();
+    });
+    chip.appendChild(del);
+
+    let dragging = false;
+    const onMove = (clientX, clientY) => {
+      const rect = collagePlacedLayer.getBoundingClientRect();
+      st.fx = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+      st.fy = Math.min(1, Math.max(0, (clientY - rect.top) / rect.height));
+      chip.style.left = `${st.fx * 100}%`;
+      chip.style.top = `${st.fy * 100}%`;
+    };
+    chip.addEventListener('pointerdown', (ev) => {
+      dragging = true;
+      chip.setPointerCapture(ev.pointerId);
+    });
+    chip.addEventListener('pointermove', (ev) => {
+      if (!dragging) return;
+      onMove(ev.clientX, ev.clientY);
+    });
+    chip.addEventListener('pointerup', () => {
+      if (!dragging) return;
+      dragging = false;
+      updateCollagePreviewState();
+    });
+
+    collagePlacedLayer.appendChild(chip);
+  });
+}
+
+function drawCollageStickers(ctx, w, h) {
+  collageStickers.forEach(st => {
+    const def = COLLAGE_STICKERS[st.type];
+    if (!def) return;
+    const size = Math.round(h * 0.09);
+    ctx.font = `${size}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = def.color;
+    ctx.fillText(def.label, st.fx * w, st.fy * h);
+  });
+}
+
 function renderCollage(targetCanvas, outW) {
   const n = collageSlots.length;
   if (n < 2) return;
@@ -3387,6 +3678,9 @@ function renderCollage(targetCanvas, outW) {
   });
 
   if (frame.after) frame.after(ctx, outW, outH);
+
+  drawCollageCaption(ctx, outW, outH);
+  drawCollageStickers(ctx, outW, outH);
 }
 
 collageGenerateBtn.addEventListener('click', () => {
@@ -3405,3 +3699,4 @@ collageDownloadBtn.addEventListener('click', () => {
   link.href = dataUrl;
   link.click();
 });
+// pranay was here
