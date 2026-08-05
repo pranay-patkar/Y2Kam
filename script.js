@@ -558,6 +558,73 @@ const LUTS = {
   }
 };
 
+// --- LUT Favorites (pin frequently-used looks to a bar above the strip) ---
+const LUT_FAVORITES_KEY = 'y2kam_lut_favorites';
+
+function loadLutFavorites() {
+  try {
+    return JSON.parse(localStorage.getItem(LUT_FAVORITES_KEY) || '[]');
+  } catch (err) {
+    return [];
+  }
+}
+
+function saveLutFavorites(list) {
+  try {
+    localStorage.setItem(LUT_FAVORITES_KEY, JSON.stringify(list));
+  } catch (err) { /* non-critical, fail silently */ }
+}
+
+function toggleLutFavorite(key) {
+  const favs = loadLutFavorites();
+  const idx = favs.indexOf(key);
+  if (idx === -1) favs.push(key); else favs.splice(idx, 1);
+  saveLutFavorites(favs);
+  renderLutFavoritesBar();
+  updateLutStripActive();
+}
+
+const lutFavoritesBarEl = document.getElementById('lutFavoritesBar');
+
+function renderLutFavoritesBar() {
+  const favs = loadLutFavorites().filter(k => LUTS[k]);
+  lutFavoritesBarEl.innerHTML = '';
+  if (favs.length === 0) {
+    lutFavoritesBarEl.style.display = 'none';
+    return;
+  }
+  lutFavoritesBarEl.style.display = 'flex';
+  favs.forEach(key => {
+    const lut = LUTS[key];
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'lut-fav-swatch' + (key === activeLut ? ' active' : '');
+    btn.dataset.lut = key;
+    btn.title = lut.label;
+    btn.innerHTML = `<div class="lut-swatch-thumb" id="lutFavThumb-${key}"></div>`;
+    btn.addEventListener('click', () => {
+      activeLut = key;
+      updateLutStripActive();
+      render();
+    });
+    lutFavoritesBarEl.appendChild(btn);
+  });
+  // reuse the same generated thumbnails as the main strip once available
+  syncLutFavoriteThumbs();
+}
+
+function syncLutFavoriteThumbs() {
+  loadLutFavorites().forEach(key => {
+    const src = document.getElementById(`lutThumb-${key}`);
+    const dst = document.getElementById(`lutFavThumb-${key}`);
+    if (src && dst && src.style.backgroundImage) {
+      dst.style.backgroundImage = src.style.backgroundImage;
+      dst.style.backgroundSize = src.style.backgroundSize;
+    }
+  });
+}
+
+
 const LUT_ORDER = [
   'none', 'harborteal', 'duststorm', 'coldsteel', 'sunfade', 'nightglam', 'pinkinverted', 'lavender',
   'y1997', 'aden', 'amaro', 'mononoir', 'sepiaclassic', 'goldenhour', 'mintchip', 'blushfilm', 'deepindigo',
@@ -582,12 +649,31 @@ function buildLutStrip() {
       updateLutStripActive();
       render();
     });
+    if (key !== 'none') {
+      const pin = document.createElement('div');
+      pin.className = 'lut-pin-btn';
+      const isFav = loadLutFavorites().includes(key);
+      pin.textContent = isFav ? '★' : '☆';
+      pin.classList.toggle('pinned', isFav);
+      pin.title = isFav ? 'Remove from favorites' : 'Add to favorites';
+      pin.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        toggleLutFavorite(key);
+        pin.textContent = loadLutFavorites().includes(key) ? '★' : '☆';
+        pin.classList.toggle('pinned', loadLutFavorites().includes(key));
+      });
+      btn.appendChild(pin);
+    }
     lutStripEl.appendChild(btn);
   });
+  renderLutFavoritesBar();
 }
 
 function updateLutStripActive() {
   lutStripEl.querySelectorAll('.lut-swatch').forEach(el => {
+    el.classList.toggle('active', el.dataset.lut === activeLut);
+  });
+  lutFavoritesBarEl.querySelectorAll('.lut-fav-swatch').forEach(el => {
     el.classList.toggle('active', el.dataset.lut === activeLut);
   });
 }
@@ -624,9 +710,23 @@ function generateLutThumbnails() {
     outCtx.putImageData(outData, 0, 0);
     thumbEl.style.backgroundImage = `url(${outCanvas.toDataURL('image/jpeg', 0.7)})`;
   });
+  syncLutFavoriteThumbs();
 }
 
 buildLutStrip();
+
+// restore last-used export quality so it doesn't reset to default every session
+(function restoreExportQuality() {
+  try {
+    const saved = localStorage.getItem('y2kam_export_quality');
+    if (saved) {
+      qualityEl.value = saved;
+      syncLabels();
+    }
+  } catch (err) { /* non-critical */ }
+})();
+
+offerSessionRestore();
 
 function applyPreset(name) {
   const p = presets[name];
@@ -731,9 +831,16 @@ function loadImageFile(file, sourceLabel) {
       fixedTimestamp = randomTimestamp();
       fixedExifData = randomExifData();
       randomizeLeakSeed();
-      render();
+      if (pendingRestoredState) {
+        applyState(pendingRestoredState);
+        pendingRestoredState = null;
+        clearSessionState();
+        statusLeft.textContent = 'Restored your last look';
+      } else {
+        render();
+      }
       generateLutThumbnails();
-      statusLeft.textContent = sourceLabel || file.name;
+      if (!pendingRestoredState) statusLeft.textContent = sourceLabel || file.name;
       // fresh photo = fresh undo history, so old edits don't bleed across images
       historyStack.length = 0;
       historyIndex = -1;
@@ -860,7 +967,11 @@ playStampEl.addEventListener('change', render);
 batteryStampEl.addEventListener('change', render);
 customStampTextEl.addEventListener('input', render);
 exifStampEl.addEventListener('change', render);
-qualityEl.addEventListener('input', () => { syncLabels(); updateSizeEstimate(); });
+qualityEl.addEventListener('input', () => {
+  syncLabels();
+  updateSizeEstimate();
+  try { localStorage.setItem('y2kam_export_quality', qualityEl.value); } catch (err) { /* non-critical */ }
+});
 timestampEl.addEventListener('change', render);
 vignetteEl.addEventListener('change', render);
 presetEl.addEventListener('change', () => applyPreset(presetEl.value));
@@ -2144,7 +2255,60 @@ function pushHistory() {
   if (historyStack.length > HISTORY_LIMIT) historyStack.shift();
   historyIndex = historyStack.length - 1;
   updateUndoRedoButtons();
+  saveSessionState(snapshot);
 }
+
+// --- Session Persistence (state only — no images, avoids storage quota
+// issues) ---
+// Saves the current editor state (all sliders/LUT/border/etc, not the photo
+// itself) so a refresh mid-edit doesn't lose the look. On load, if a saved
+// session exists AND the user hasn't picked a photo yet, they're offered a
+// one-tap restore; declining or picking a new photo clears/ignores it.
+// Deliberately does not persist collageSlots or their images — same
+// storage-quota reasoning, and collage is inherently multi-photo so the
+// footprint would be much larger.
+const SESSION_STATE_KEY = 'y2kam_session_state';
+
+function saveSessionState(snapshotJson) {
+  try {
+    localStorage.setItem(SESSION_STATE_KEY, snapshotJson);
+  } catch (err) { /* non-critical, likely storage full — fail silently */ }
+}
+
+function clearSessionState() {
+  try { localStorage.removeItem(SESSION_STATE_KEY); } catch (err) { /* non-critical */ }
+}
+
+function offerSessionRestore() {
+  let saved = null;
+  try {
+    const raw = localStorage.getItem(SESSION_STATE_KEY);
+    if (raw) saved = JSON.parse(raw);
+  } catch (err) { /* corrupted entry, ignore */ }
+  if (!saved) return;
+
+  const banner = document.createElement('div');
+  banner.className = 'session-restore-banner';
+  banner.innerHTML = `
+    <span>Restore your last look? It'll apply as soon as you pick a photo.</span>
+    <button type="button" class="win95-btn" id="sessionRestoreYes">Restore</button>
+    <button type="button" class="win95-btn" id="sessionRestoreNo">Dismiss</button>
+  `;
+  document.body.appendChild(banner);
+
+  document.getElementById('sessionRestoreYes').addEventListener('click', () => {
+    pendingRestoredState = saved;
+    statusLeft.textContent = 'Look will apply to the next photo you open';
+    banner.remove();
+  });
+  document.getElementById('sessionRestoreNo').addEventListener('click', () => {
+    clearSessionState();
+    banner.remove();
+  });
+}
+
+// holds a state pulled from a restored session until the next photo loads
+let pendingRestoredState = null;
 
 function undo() {
   if (historyIndex <= 0) return;
@@ -3699,4 +3863,3 @@ collageDownloadBtn.addEventListener('click', () => {
   link.href = dataUrl;
   link.click();
 });
-// pranay was here
